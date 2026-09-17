@@ -131,3 +131,80 @@ class DatabaseTests(unittest.TestCase):
             price_security = connection.scalar(select(daily_prices.c.security_id))
             security = connection.scalar(select(securities.c.id))
             self.assertEqual(price_security, security)
+
+    def test_late_isin_merges_bse_fallback_into_existing_nse_security(self):
+        self.database.upsert_securities(
+            [{
+                "exchange": "NSE", "symbol": "RELIANCE", "series": "EQ",
+                "isin": "INE002A01018", "name": "Reliance Industries Limited",
+                "source": "nse_master",
+            }]
+        )
+        self.database.upsert_securities(
+            [{
+                "exchange": "BSE", "symbol": "RELIANCE", "series": "A",
+                "scrip_code": "500325", "name": "RELIANCE",
+                "source": "bse_disclosure",
+            }]
+        )
+        self.database.upsert_prices(
+            [{
+                "exchange": "BSE", "symbol": "RELIANCE", "series": "A",
+                "scrip_code": "500325", "isin": "INE002A01018",
+                "name": "Reliance Industries Limited",
+                "trading_date": date(2026, 9, 17), "close": 1240.8,
+                "source": "bse_bhavcopy",
+            }]
+        )
+        with self.database.engine.connect() as connection:
+            mapped_ids = set(
+                connection.execute(
+                    select(exchange_symbols.c.security_id).where(
+                        exchange_symbols.c.normalized_symbol == "RELIANCE"
+                    )
+                ).scalars()
+            )
+            isin_count = connection.scalar(
+                select(func.count()).select_from(securities).where(
+                    securities.c.isin == "INE002A01018"
+                )
+            )
+            canonical_name = connection.scalar(
+                select(securities.c.name).where(
+                    securities.c.isin == "INE002A01018"
+                )
+            )
+        self.assertEqual(isin_count, 1)
+        self.assertEqual(len(mapped_ids), 1)
+        self.assertEqual(canonical_name, "Reliance Industries Limited")
+
+    def test_bse_symbol_change_resolves_latest_active_scrip_mapping(self):
+        self.database.upsert_securities(
+            [{
+                "exchange": "BSE", "symbol": "OLDNAME", "series": "A",
+                "scrip_code": "500999", "name": "Example Limited",
+                "source": "fixture",
+            }]
+        )
+        self.database.upsert_securities(
+            [{
+                "exchange": "BSE", "symbol": "NEWNAME", "series": "A",
+                "scrip_code": "500999", "name": "Example Limited",
+                "source": "fixture",
+            }]
+        )
+        self.database.upsert_prices(
+            [{
+                "exchange": "BSE", "symbol": "LATEST LABEL", "series": "A",
+                "scrip_code": "500999", "trading_date": date(2026, 9, 17),
+                "close": 10.0, "source": "fixture",
+            }]
+        )
+        with self.database.engine.connect() as connection:
+            active = connection.scalar(
+                select(func.count()).select_from(exchange_symbols).where(
+                    exchange_symbols.c.scrip_code == "500999",
+                    exchange_symbols.c.active.is_(True),
+                )
+            )
+        self.assertEqual(active, 1)

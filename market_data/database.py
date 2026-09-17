@@ -265,13 +265,23 @@ class MarketDatabase:
             )
             security_id = int(result.inserted_primary_key[0])
         else:
+            existing_name = connection.execute(
+                select(securities.c.name).where(securities.c.id == security_id)
+            ).scalar_one()
+            preferred_name = existing_name
+            if (
+                not existing_name
+                or existing_name.upper() == symbol
+                or len(name) > len(existing_name)
+            ):
+                preferred_name = name
             connection.execute(
                 securities.update()
                 .where(securities.c.id == security_id)
                 .values(
                     isin=isin if isin else securities.c.isin,
-                    name=name,
-                    normalized_name=name.upper(),
+                    name=preferred_name,
+                    normalized_name=preferred_name.upper(),
                     active=bool(record.get("active", True)),
                     updated_at=now,
                 )
@@ -293,6 +303,16 @@ class MarketDatabase:
             else None,
             "updated_at": now,
         }
+        if exchange == "BSE" and scrip_code:
+            connection.execute(
+                exchange_symbols.update()
+                .where(
+                    exchange_symbols.c.exchange == "BSE",
+                    exchange_symbols.c.scrip_code == scrip_code,
+                    exchange_symbols.c.normalized_symbol != symbol,
+                )
+                .values(active=False, updated_at=now)
+            )
         if mapping:
             connection.execute(
                 exchange_symbols.update()
@@ -334,6 +354,26 @@ class MarketDatabase:
             .where(daily_prices.c.security_id == old_security_id)
             .values(security_id=new_security_id)
         )
+        for table_name in (
+            "filings",
+            "shareholding_patterns",
+            "financial_facts",
+            "corporate_actions",
+            "board_meetings",
+            "pit_disclosures",
+            "sast_disclosures",
+        ):
+            exists = connection.exec_driver_sql(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table_name,),
+            ).first()
+            if exists:
+                connection.exec_driver_sql(
+                    'UPDATE "{}" SET security_id=? WHERE security_id=?'.format(
+                        table_name
+                    ),
+                    (new_security_id, old_security_id),
+                )
         mappings = connection.execute(
             select(func.count()).select_from(exchange_symbols).where(
                 exchange_symbols.c.security_id == old_security_id
@@ -364,12 +404,18 @@ class MarketDatabase:
         symbol = normalize_symbol(record["symbol"], exchange, record.get("alias_source"))
         series = clean_text(record.get("series")).upper()
         scrip_code = clean_text(record.get("scrip_code")).upper()
+        if normalize_isin(record.get("isin")):
+            return self.upsert_security(connection, record)
         if scrip_code:
             security_id = connection.execute(
                 select(exchange_symbols.c.security_id).where(
                     exchange_symbols.c.exchange == exchange,
                     exchange_symbols.c.scrip_code == scrip_code,
-                )
+                ).order_by(
+                    exchange_symbols.c.active.desc(),
+                    exchange_symbols.c.updated_at.desc(),
+                    exchange_symbols.c.id.desc(),
+                ).limit(1)
             ).scalar_one_or_none()
             if security_id is not None:
                 return int(security_id)

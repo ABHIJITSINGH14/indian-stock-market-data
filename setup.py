@@ -40,6 +40,8 @@ setup(
     entry_points={
         'console_scripts': [
             'stock-market-data=scripts.run_all:main',
+            'stock-market-disclosures=scripts.collect_disclosures:main',
+            'stock-screener=scripts.screen:main',
         ],
     },
 )

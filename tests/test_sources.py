@@ -65,6 +65,20 @@ class SourceParsingTests(unittest.TestCase):
         self.assertEqual(records[0]["scrip_code"], "500001")
         self.assertEqual(records[0]["close"], 20.5)
 
+    def test_parse_bse_udiff_raw_csv(self):
+        data = (
+            b"TradDt,FinInstrmId,ISIN,TckrSymb,SctySrs,OpnPric,HghPric,"
+            b"LwPric,ClsPric,LastPric,PrvsClsgPric,TtlTradgVol,TtlTrfVal,"
+            b"TtlNbOfTxsExctd\n"
+            b"2026-09-17,500325,INE002A01018,RELIANCE,A,1390,1405,"
+            b"1385,1400,1399,1388,12000,16800000,900\n"
+        )
+        records = parse_bse_bhavcopy(data, date(2026, 9, 17))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["symbol"], "RELIANCE")
+        self.assertEqual(records[0]["scrip_code"], "500325")
+        self.assertEqual(records[0]["close"], 1400.0)
+
     def test_sources_use_mocked_official_http_fixtures(self):
         nse_client = Mock()
         nse_client.get.return_value.content = (

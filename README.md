@@ -15,6 +15,14 @@ python -m pip install -r requirements.txt
 python scripts/run_all.py init-db
 python scripts/run_all.py masters
 python scripts/run_all.py prices --start-date 2024-01-01 --end-date 2024-01-31
+
+# Official filings, XBRL fundamentals, ownership and regulatory disclosures
+python scripts/collect_disclosures.py \
+  --exchange all --start-date 2026-07-01 --end-date 2026-09-18
+
+# Safe local fundamental screen
+python scripts/screen.py --where roe:gte:15 --where debt_equity:lt:1 \
+  --sort roe:desc --limit 25
 ```
 
 Module execution is equivalent:
@@ -36,6 +44,16 @@ and make the command exit non-zero while other dates and sources continue.
 - `daily_prices`: exchange/date/series OHLCV bhavcopy observations.
 - `ingestion_runs`, `ingestion_checkpoints`, `ingestion_errors`: truthful run
   status, incremental progress, and source failures.
+- `filings`, `raw_documents`: revision-aware filing indexes and content-hashed
+  official XML/XBRL/attachment archives.
+- `shareholding_patterns`: promoter, FII/FPI, DII, public, and residual
+  non-institutional public ownership by symbol and quarter.
+- `financial_facts`, `financial_metrics`: taxonomy-independent raw XBRL facts
+  and canonical quarterly metrics with filing/as-of provenance.
+- `corporate_actions`, `board_meetings`, `pit_disclosures`,
+  `sast_disclosures`: normalized exchange disclosures linked to securities.
+- `institutional_activity`: market-wide daily FII/FPI and DII cash activity.
+- `market_metrics`: price and rolling 52-week observations used by the screener.
 - `schema_migrations`: locally applied schema version.
 
 Legacy ancillary scripts continue to produce ignored CSV files under
@@ -48,6 +66,13 @@ NSE uses its official equity master CSV and legacy/UDiFF bhavcopy ZIP archives.
 BSE uses its official active-scrip API and legacy/UDiFF equity bhavcopy ZIP
 archives. Exchanges may omit archives on weekends and market holidays; narrow
 explicit date ranges avoid recording expected non-trading days as failures.
+
+NSE bulk corporate-filing APIs and their linked XBRL instances are the primary
+structured source for shareholding and quarterly financial facts. Stable BSE
+per-scrip APIs enrich corporate actions, meetings, PIT and SAST disclosures.
+BSE's current shareholding API is not automated because it redirects to an
+exchange error page; the collector does not silently replace it with
+unofficial data. Review exchange terms before redistributing archived filings.
 
 ## License
 

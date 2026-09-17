@@ -29,6 +29,10 @@ BSE_UDIFF_BHAVCOPY_URL = (
     "https://www.bseindia.com/download/BhavCopy/Equity/"
     "BhavCopy_BSE_CM_0_0_0_{yyyymmdd}_F_0000.zip"
 )
+BSE_UDIFF_BHAVCOPY_CSV_URL = (
+    "https://www.bseindia.com/download/BhavCopy/Equity/"
+    "BhavCopy_BSE_CM_0_0_0_{yyyymmdd}_F_0000.CSV"
+)
 
 
 def _keyed(row: Mapping[str, object]) -> Dict[str, object]:
@@ -187,7 +191,8 @@ def parse_nse_bhavcopy(data: bytes, trading_date: date) -> List[Dict[str, object
 
 def parse_bse_bhavcopy(data: bytes, trading_date: date) -> List[Dict[str, object]]:
     records = []
-    for row in _zip_csv_rows(data):
+    rows = _zip_csv_rows(data) if data.startswith(b"PK") else _csv_rows(data)
+    for row in rows:
         scrip_code = _value(row, "SC_CODE", "SCRIP_CD", "FININSTRMID")
         symbol = _value(row, "SC_NAME", "SCRIP_ID", "TCKRSYMB") or scrip_code
         close = _float(_value(row, "CLOSE", "CLSPRIC"))
@@ -300,20 +305,32 @@ class BSESource:
 
     def fetch_bhavcopy(self, trading_date: date) -> List[Dict[str, object]]:
         urls = [
-            BSE_UDIFF_BHAVCOPY_URL.format(
-                yyyymmdd=trading_date.strftime("%Y%m%d")
+            (
+                BSE_UDIFF_BHAVCOPY_CSV_URL.format(
+                    yyyymmdd=trading_date.strftime("%Y%m%d")
+                ),
+                "csv",
             ),
-            BSE_BHAVCOPY_URL.format(
-                day=trading_date.strftime("%d"),
-                month=trading_date.strftime("%m"),
-                year2=trading_date.strftime("%y"),
+            (
+                BSE_UDIFF_BHAVCOPY_URL.format(
+                    yyyymmdd=trading_date.strftime("%Y%m%d")
+                ),
+                "zip",
+            ),
+            (
+                BSE_BHAVCOPY_URL.format(
+                    day=trading_date.strftime("%d"),
+                    month=trading_date.strftime("%m"),
+                    year2=trading_date.strftime("%y"),
+                ),
+                "zip",
             ),
         ]
         errors = []
-        for url in urls:
+        for url, expected in urls:
             try:
                 response = self.client.get(
-                    url, source=self.name, base_url=BSE_BASE_URL, expected="zip"
+                    url, source=self.name, base_url=BSE_BASE_URL, expected=expected
                 )
                 return parse_bse_bhavcopy(response.content, trading_date)
             except Exception as exc:
