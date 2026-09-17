@@ -30,6 +30,7 @@ setup(
         'pandas>=2.0.0',
         'numpy>=1.24.0',
         'requests>=2.31.0',
+        'urllib3>=1.26.18,<2',
         'beautifulsoup4>=4.12.0',
         'lxml>=4.9.0',
         'python-dateutil>=2.8.0',
@@ -38,7 +39,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'stock-market-data=scripts.run_all:run_all_downloads',
+            'stock-market-data=scripts.run_all:main',
         ],
     },
 )

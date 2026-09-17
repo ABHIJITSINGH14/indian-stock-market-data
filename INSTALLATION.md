@@ -1,140 +1,56 @@
-# Installation Guide
+# Installation
 
-## System Requirements
+## Requirements
 
-- Python 3.8 or higher
-- pip (Python package manager)
-- Internet connection
-- ~2-5 GB disk space for historical data
+- Python 3.9 or newer
+- Internet access to `nseindia.com`, `nseindia.com` archive hosts, and
+  `bseindia.com`
+- SQLite (included with Python)
 
-## Installation Steps
+The pinned dependencies support the macOS system Python 3.9/LibreSSL stack,
+including `urllib3` 1.26. The corrected `openpyxl` pin is `3.1.2`.
 
-### 1. Clone the Repository
+## macOS and Linux
 
 ```bash
 git clone https://github.com/ABHIJITSINGH14/indian-stock-market-data.git
 cd indian-stock-market-data
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python scripts/run_all.py init-db
 ```
 
-### 2. Create Virtual Environment (Recommended)
+On Apple Silicon, the standard python.org installer or Homebrew Python is
+recommended if the older system Python cannot build an unrelated legacy
+analysis dependency.
 
-**On Linux/macOS:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
+## Windows
+
+```powershell
+py -3.9 -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python scripts/run_all.py init-db
 ```
 
-**On Windows:**
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-### 3. Upgrade pip
-
-```bash
-pip install --upgrade pip
-```
-
-### 4. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 5. Verify Installation
+Initialization creates `data/databases/stock_market.db` and applies all local
+schema migrations. Override it with a SQLAlchemy SQLite URL:
 
 ```bash
-python -c "import yfinance, pandas, requests; print('Installation successful!')"
+python scripts/run_all.py init-db \
+  --database-url sqlite:////absolute/path/to/market.db
 ```
 
-### 6. (Optional) Install as Package
+## Verification
 
 ```bash
-pip install -e .
+python -m unittest discover -s tests -v
+python scripts/run_all.py --help
+python -m scripts.run_all --help
 ```
 
-## Troubleshooting Installation
-
-### Issue: `pip install` fails
-
-**Solution:**
-- Upgrade pip: `pip install --upgrade pip`
-- Try installing with no cache: `pip install --no-cache-dir -r requirements.txt`
-- Install packages one by one if batch install fails
-
-### Issue: Virtual environment activation fails
-
-**Solution:**
-- Make sure you're in the project directory
-- Check Python path: `which python3` (Linux/Mac) or `where python` (Windows)
-- Try creating venv again: `python -m venv venv --clear`
-
-### Issue: Permission denied error
-
-**Solution:**
-- On Linux/Mac, prefix commands with `sudo` or use user-level install
-- On Windows, run Command Prompt as Administrator
-
-## Post-Installation Setup
-
-### 1. Create Data Directories
-
-The script automatically creates these directories:
-- `data/raw/` - Raw downloaded data
-- `data/processed/` - Processed data
-- `data/databases/` - Database files
-- `logs/` - Log files
-
-### 2. Configure Settings (Optional)
-
-Edit `config/config.py` to customize:
-- Download date ranges
-- Stock symbols to download
-- Retry parameters
-- Logging levels
-
-### 3. First Run
-
-```bash
-python scripts/run_all.py
-```
-
-This will:
-1. Download NSE historical data (20+ years)
-2. Fetch BSE company data
-3. Download company fundamentals
-4. Fetch bulk and block deals (last 90 days)
-5. Get corporate actions data
-
-## Next Steps
-
-- Read [USAGE.md](USAGE.md) for detailed usage instructions
-- Check [README.md](README.md) for feature overview
-- Review downloaded data in `data/raw/` directory
-- Run analysis: `python scripts/analyze_data.py`
-
-## Getting Help
-
-If you encounter issues:
-
-1. Check the log files in `logs/` directory
-2. Review error messages carefully
-3. Ensure internet connection is stable
-4. Try running individual scripts to isolate the issue
-5. Check GitHub issues: https://github.com/ABHIJITSINGH14/indian-stock-market-data/issues
-
-## Uninstallation
-
-```bash
-# Deactivate virtual environment
-deactivate
-
-# Remove virtual environment
-rm -rf venv  # Linux/Mac
-rmdir venv   # Windows
-
-# Delete the project folder
-rm -rf indian-stock-market-data  # Linux/Mac
-rmdir /s indian-stock-market-data  # Windows
-```
+Downloaded databases, CSVs, and logs are ignored by Git and must not be
+committed.

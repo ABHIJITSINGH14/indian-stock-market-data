@@ -1,340 +1,94 @@
-# Usage Guide
+# Usage
 
-## Quick Start
+All commands work from the repository root using either
+`python scripts/run_all.py` or `python -m scripts.run_all`.
 
-### Run All Downloads
-
-```bash
-python scripts/run_all.py
-```
-
-This runs all download tasks in sequence:
-1. NSE Historical Data (20+ years)
-2. BSE Company Data
-3. Company Fundamentals
-4. Bulk & Block Deals (last 90 days)
-5. Corporate Actions
-
-## Individual Downloads
-
-### Download NSE Historical Data
+## Commands
 
 ```bash
-python scripts/download_nse_data.py
+# Create or migrate the default SQLite database without network access
+python scripts/run_all.py init-db
+
+# Refresh both complete official equity security masters
+python scripts/run_all.py masters
+
+# Refresh only one master
+python scripts/run_all.py masters --exchange nse
+python scripts/run_all.py masters --exchange bse
+
+# Ingest a specific historical range from both exchanges
+python scripts/run_all.py prices \
+  --start-date 2024-01-01 \
+  --end-date 2024-12-31
+
+# Refresh masters, then prices
+python scripts/run_all.py all \
+  --start-date 2024-01-01 \
+  --end-date 2024-01-31
+
+# Retry all recorded failed dates up to the end date
+python scripts/run_all.py prices --retry-failed --end-date 2024-12-31
 ```
 
-**Output:** `data/raw/nse_bhavcopy.csv`
+Without `--start-date`, price ingestion starts one day after that source's
+latest successful checkpoint. On a new database it requests only
+`--end-date` (today by default), making the default command a practical daily
+refresh rather than an accidental multi-year download.
 
-**Data includes:**
-- Daily OHLCV (Open, High, Low, Close, Volume)
-- 20+ years of historical data
-- 20 major NSE stocks
+Useful controls:
 
-**Customization:**
-Edit `config/config.py` to modify:
-```python
-NSE_STOCKS = ['RELIANCE.NS', 'TCS.NS', ...]  # Add/remove stocks
-START_DATE = TODAY - timedelta(days=365*20)  # Change time period
+```text
+--database-url URL       SQLite database URL
+--exchange nse|bse|all   Source selection
+--request-delay SECONDS  Delay between official requests (default 0.5)
+--timeout SECONDS        Per-request timeout (default 30)
+--retries COUNT          Retry count for transient HTTP failures (default 3)
+--verbose                Debug logging
 ```
 
-### Download BSE Company Data
+## Incremental and failure behavior
 
-```bash
-python scripts/download_bse_data.py
+Each source/date is an independent checkpoint. A successful date is skipped on
+rerun; its rows are also protected by the `daily_prices` primary key and are
+updated rather than duplicated if explicitly processed again. A failed date is
+stored with its error, processing continues, and the process exits with status
+1. No Yahoo or other unofficial fallback is used.
+
+Date ranges include weekdays. Market holidays have no archive and are therefore
+reported as source/date failures. This is intentional: the system does not
+guess whether a missing official archive is a holiday, a transient outage, or
+an upstream change.
+
+## SQLite schema and querying
+
+Default location: `data/databases/stock_market.db`.
+
+```sql
+SELECT s.canonical_id, s.isin, s.name,
+       x.exchange, x.exchange_symbol, x.series, x.scrip_code
+FROM securities AS s
+JOIN exchange_symbols AS x ON x.security_id = s.id;
+
+SELECT s.name, p.exchange, p.trading_date, p.close, p.volume
+FROM daily_prices AS p
+JOIN securities AS s ON s.id = p.security_id
+WHERE s.isin = 'INE002A01018'
+ORDER BY p.trading_date;
 ```
 
-**Output:** `data/raw/bse_data.csv`
-
-**Data includes:**
-- Listed company information
-- Script codes
-- ISIN numbers
-- Company status
-
-### Download Company Fundamentals
-
-```bash
-python scripts/download_fundamentals.py
-```
-
-**Output:** `data/raw/fundamentals.csv`
-
-**Data includes:**
-- Market cap
-- P/E ratio
-- Dividend yield
-- Book value
-- P/B ratio
-- Revenue
-- ROE
-- Debt-to-equity ratio
-- 52-week high/low
-
-### Download Bulk & Block Deals
-
-```bash
-python scripts/bulk_block_deals.py
-```
-
-**Output:**
-- `data/raw/bulk_deals.csv`
-- `data/raw/block_deals.csv`
-
-**Data includes:**
-- Deal quantity
-- Deal price
-- Deal date
-- Client/Counterparty info
-
-### Download Corporate Actions
-
-```bash
-python scripts/corporate_actions.py
-```
-
-**Output:** `data/raw/corporate_actions.csv`
-
-**Data includes:**
-- Dividends
-- Stock splits
-- Bonus shares
-- Rights issues
-- Ex-dates
-
-## Analyze Data
-
-### Run Data Analysis
-
-```bash
-python scripts/analyze_data.py
-```
-
-**Generates:**
-- Price trends analysis
-- Fundamental analysis
-- Data summary report
-
-### Analysis Output
-
-```
-==================================================
-DATA SUMMARY REPORT
-==================================================
-
-Price Data: 50000 records
-  Symbols: 20
-  Date range: 2004-01-01 to 2024-01-15
-
-Fundamentals: 20 companies
-
-Bulk Deals: 1500 records
-
-Block Deals: 800 records
-
-Corporate Actions: 2000 records
-==================================================
-```
-
-## Accessing Downloaded Data
-
-### CSV Files
-
-All data is saved as CSV in `data/raw/` directory:
-
-```python
-import pandas as pd
-
-# Read NSE data
-df_nse = pd.read_csv('data/raw/nse_bhavcopy.csv')
-print(df_nse.head())
-
-# Read fundamentals
-df_fund = pd.read_csv('data/raw/fundamentals.csv')
-print(df_fund.head())
-```
-
-### Database (Optional)
-
-For large datasets, use SQLite:
-
-```python
-import pandas as pd
-from sqlalchemy import create_engine
-
-engine = create_engine('sqlite:///data/databases/stock_market.db')
-
-# Read from database
-df = pd.read_sql('SELECT * FROM nse_bhavcopy', con=engine)
-print(df.head())
-```
-
-## Scheduled Downloads
-
-### Using GitHub Actions (Cloud)
-
-Enable workflow in `.github/workflows/download-data.yml`:
-1. Go to your repository
-2. Click "Actions" tab
-3. Enable workflow
-4. It runs automatically every weekday at 5 AM IST
-
-### Using Cron (Linux/Mac)
-
-Edit crontab:
-```bash
-crontab -e
-```
-
-Add line to run daily at 4 AM:
-```
-0 4 * * * cd /path/to/indian-stock-market-data && python scripts/run_all.py
-```
-
-### Using Task Scheduler (Windows)
-
-1. Open Task Scheduler
-2. Create Basic Task
-3. Set trigger (daily/weekly)
-4. Set action: `python.exe scripts/run_all.py`
-5. Set location: Project directory
-
-## Configuration
-
-### Edit config/config.py
-
-```python
-# Change date range
-START_DATE = datetime(2020, 1, 1).date()  # From 2020
-END_DATE = datetime.now().date()  # To today
-
-# Add/remove stocks
-NSE_STOCKS = [
-    'RELIANCE.NS',
-    'TCS.NS',
-    'INFOSY.NS',
-    # Add more...
-]
-
-# Change retry attempts
-API_RETRY_ATTEMPTS = 5  # Default: 3
-
-# Change request delay
-REQUEST_DELAY = 1.0  # seconds between requests
-```
-
-## Logging
-
-### View Logs
-
-Logs are saved in `logs/` directory:
-
-```bash
-# View today's log
-cat logs/app_20240115.log
-
-# View last 100 lines
-tail -100 logs/app_20240115.log
-
-# Filter errors
-grep ERROR logs/app_20240115.log
-```
-
-### Change Log Level
-
-```python
-# In config/config.py
-LOG_LEVEL = 'DEBUG'  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
-```
-
-## Troubleshooting
-
-### Issue: "No data found for symbol"
-
-**Solution:**
-- Check if symbol is correct (e.g., 'RELIANCE.NS')
-- Verify date range is valid
-- Check internet connection
-
-### Issue: "API timeout"
-
-**Solution:**
-- Increase timeout in config: `API_TIMEOUT = 60`
-- Reduce number of stocks to download
-- Check internet speed
-
-### Issue: "Rate limit exceeded"
-
-**Solution:**
-- Increase request delay: `REQUEST_DELAY = 2.0`
-- Run downloads at different times
-- Use smaller date ranges
-
-### Issue: "File already exists"
-
-**Solution:**
-- Backup existing file: `mv data/raw/nse_bhavcopy.csv data/raw/nse_bhavcopy.csv.bak`
-- Run download again
-
-## Performance Tips
-
-1. **Run during off-market hours** to avoid rate limiting
-2. **Use VPN** if blocked by ISP
-3. **Increase request delay** for stability
-4. **Download in batches** instead of all at once
-5. **Monitor resource usage** for large datasets
-
-## Data Analysis Examples
-
-### Calculate Moving Averages
-
-```python
-import pandas as pd
-
-df = pd.read_csv('data/raw/nse_bhavcopy.csv')
-df['MA_50'] = df['close'].rolling(window=50).mean()
-df['MA_200'] = df['close'].rolling(window=200).mean()
-print(df.head())
-```
-
-### Find Top Performers
-
-```python
-df = pd.read_csv('data/raw/fundamentals.csv')
-top_pe = df.nsmallest(5, 'pe_ratio')[['symbol', 'pe_ratio', 'dividend_yield']]
-print("Stocks with lowest P/E ratios:")
-print(top_pe)
-```
-
-### Analyze Bulk Deals
-
-```python
-df = pd.read_csv('data/raw/bulk_deals.csv')
-df_grouped = df.groupby('symbol').sum()['quantity'].sort_values(ascending=False)
-print("Most active bulk deal stocks:")
-print(df_grouped.head(10))
-```
-
-## Support & Issues
-
-For issues, questions, or feature requests:
-
-1. Check existing [issues](https://github.com/ABHIJITSINGH14/indian-stock-market-data/issues)
-2. Create new issue with details
-3. Include:
-   - Error message (from logs)
-   - Python version
-   - OS and system info
-   - Steps to reproduce
-
-## Contributing
-
-Contributions welcome! Please:
-
-1. Fork repository
-2. Create feature branch
-3. Make changes
-4. Submit pull request
-
-## Disclaimer
-
-This tool is for educational and personal analysis only. Always verify data and consult financial advisors before making investment decisions.
+ISIN is the cross-exchange identity when valid and available. Missing ISINs use
+a deterministic exchange-scoped hash of symbol plus series/scrip code, avoiding
+unsafe name-based merging. Raw symbols and response rows remain available for
+audit.
+
+## Storage and runtime expectations
+
+A single recent bhavcopy typically contains thousands of rows. A daily refresh
+takes seconds to minutes depending on exchange throttling. Multi-year ranges can
+take hours because requests are deliberately rate-limited. Allow roughly
+1-5 GB for broad multi-year NSE+BSE history; actual size varies with coverage
+and SQLite page growth.
+
+The legacy fundamentals, deals, corporate-action, and analysis scripts retain
+their CSV outputs under `data/raw/`. They are not part of the official
+master/bhavcopy transaction and are not run by the new ingestion CLI.

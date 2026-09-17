@@ -1,50 +1,54 @@
-# Indian Stock Market Data Automation
+# Indian Stock Market Data
 
-An automated tool for downloading and analyzing Indian stock market data from BSE/NSE, company fundamentals, and financial filings for personal study and analysis.
+A local-first NSE/BSE equity data platform backed by SQLite. The ingestion core
+downloads official exchange security masters and bhavcopies for the full
+available equity universe; it does not substitute Yahoo data when an official
+feed fails.
 
-## Features
-
-- **NSE Historical Data**: Download daily stock prices for 20+ years
-- **BSE Data**: Company information and historical pricing
-- **Company Fundamentals**: Financial ratios, P/E, dividend history from open sources
-- **Bulk & Block Deals**: Trading activity data
-- **Corporate Actions**: Stock splits, dividends, bonus information
-- **Automated Scheduling**: Run downloads on a schedule
-- **Data Storage**: CSV and SQLite database support
-- **Error Handling**: Robust retry logic and error reporting
-
-## Data Sources
-
-- **yfinance**: Historical stock prices (Yahoo Finance)
-- **NSE Official Website**: Official market data
-- **BSE Official Website**: BSE listed companies
-- **Public APIs**: Open-source financial data APIs
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/ABHIJITSINGH14/indian-stock-market-data.git
-cd indian-stock-market-data
-```
-
-2. Create virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-## Usage
+## Quick start
 
 ```bash
-python scripts/run_all.py
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+
+python scripts/run_all.py init-db
+python scripts/run_all.py masters
+python scripts/run_all.py prices --start-date 2024-01-01 --end-date 2024-01-31
 ```
+
+Module execution is equivalent:
+
+```bash
+python -m scripts.run_all all --start-date 2024-01-01 --end-date 2024-01-31
+```
+
+The default database is `data/databases/stock_market.db`. Repeating a command
+is safe: security mappings and daily prices are upserted transactionally, and
+successful price dates are skipped. Failed exchange/date downloads are recorded
+and make the command exit non-zero while other dates and sources continue.
+
+## Data model
+
+- `securities`: canonical company/security identity, preferring ISIN.
+- `exchange_symbols`: raw and normalized NSE/BSE aliases, series, and BSE scrip
+  codes linked to one canonical security.
+- `daily_prices`: exchange/date/series OHLCV bhavcopy observations.
+- `ingestion_runs`, `ingestion_checkpoints`, `ingestion_errors`: truthful run
+  status, incremental progress, and source failures.
+- `schema_migrations`: locally applied schema version.
+
+Legacy ancillary scripts continue to produce ignored CSV files under
+`data/raw/`. SQLite is the durable source of truth for equity masters and daily
+prices. See [INSTALLATION.md](INSTALLATION.md) and [USAGE.md](USAGE.md).
+
+## Source notes
+
+NSE uses its official equity master CSV and legacy/UDiFF bhavcopy ZIP archives.
+BSE uses its official active-scrip API and legacy/UDiFF equity bhavcopy ZIP
+archives. Exchanges may omit archives on weekends and market holidays; narrow
+explicit date ranges avoid recording expected non-trading days as failures.
 
 ## License
 
-MIT License - Free for personal and educational purposes
+MIT License. Data remains subject to the exchanges' terms of use.
