@@ -139,13 +139,17 @@ class Screener:
                 )
 
         for sort in reversed(request.sort):
-            results.sort(
+            present = [
+                item for item in results if _sort_value(item, sort.field) is not None
+            ]
+            missing = [
+                item for item in results if _sort_value(item, sort.field) is None
+            ]
+            present.sort(
                 key=lambda item, field=sort.field: _sort_value(item, field),
                 reverse=sort.descending,
             )
-            results.sort(
-                key=lambda item, field=sort.field: _sort_value(item, field) is None
-            )
+            results[:] = present + missing
         return tuple(results[: request.limit])
 
 

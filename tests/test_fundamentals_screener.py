@@ -96,6 +96,12 @@ def test_safe_filters_sort_limit_and_missing_values():
     )
     assert [item.symbol for item in engine.run(null_request)] == ["NULL"]
 
+    descending = ScreenRequest(
+        as_of=date(2025, 8, 1),
+        sort=(Sort("sales_growth", descending=True),),
+    )
+    assert [item.symbol for item in engine.run(descending)] == ["BBB", "AAA", "NULL"]
+
     with pytest.raises(ValueError, match="unsupported screener field"):
         Condition("revenue; DROP TABLE facts", Operator.GT, Decimal("1"))
     with pytest.raises(TypeError, match="Decimal"):
@@ -151,4 +157,3 @@ def test_sqlite_adapter_honors_as_of_revisions_and_schema_allowlist():
             metric_columns=schema.metric_columns,
             market_columns=schema.market_columns,
         )
-

@@ -150,6 +150,7 @@ class MetricMapper:
                 key=lambda item: (
                     _context_rank(item.context, query, target_end),
                     self._alias_rank[(metric, _normalized(item.local_name))],
+                    _namespace_version_rank(item.namespace),
                     item.namespace,
                 ),
             )
@@ -201,6 +202,11 @@ def _duration_days(context: ContextRecord) -> Optional[int]:
     if context.period_start is None or context.period_end is None:
         return None
     return (context.period_end - context.period_start).days + 1
+
+
+def _namespace_version_rank(namespace: str) -> Tuple[int, ...]:
+    versions = tuple(int(value) for value in re.findall(r"\d+", namespace))
+    return tuple(-value for value in versions) if versions else (0,)
 
 
 def _context_matches(
