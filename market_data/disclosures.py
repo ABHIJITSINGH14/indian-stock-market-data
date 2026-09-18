@@ -673,7 +673,7 @@ class DisclosureStore:
         self.database = database
 
     def initialize(self) -> None:
-        disclosure_metadata.create_all(self.database.engine)
+        self.database.initialize_metadata(disclosure_metadata)
         self._deduplicate_filings()
 
     def _deduplicate_filings(self) -> None:

@@ -143,6 +143,33 @@ class DatabaseTests(unittest.TestCase):
             price_database.engine.dispose()
             merge_database.engine.dispose()
 
+    def test_schema_initialization_waits_for_active_writer(self):
+        path = Path(self.temp_dir.name) / "writer-init.db"
+        writer_database = MarketDatabase("sqlite:///{}".format(path))
+        initializer_database = MarketDatabase("sqlite:///{}".format(path))
+        writer_database.initialize()
+        entered = threading.Event()
+        release = threading.Event()
+
+        def hold_writer():
+            with writer_database.transaction():
+                entered.set()
+                self.assertTrue(release.wait(2))
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                writer_future = executor.submit(hold_writer)
+                self.assertTrue(entered.wait(2))
+                initializer_future = executor.submit(initializer_database.initialize)
+                self.assertFalse(initializer_future.done())
+                release.set()
+                writer_future.result(timeout=5)
+                initializer_future.result(timeout=5)
+        finally:
+            release.set()
+            writer_database.engine.dispose()
+            initializer_database.engine.dispose()
+
     def test_price_upsert_resolves_bse_scrip_code_and_updates_in_place(self):
         self.database.upsert_securities(
             [

@@ -217,22 +217,33 @@ class MarketDatabase:
     def initialize(self) -> None:
         if self.engine.dialect.name == "sqlite":
             with self._initialization_lock():
-                with self.engine.connect() as connection:
-                    connection.exec_driver_sql("BEGIN IMMEDIATE")
+                with self.transaction() as connection:
                     self._initialize_schema(connection)
-                    connection.commit()
             return
         with self.engine.begin() as connection:
             self._initialize_schema(connection)
 
+    def initialize_metadata(self, target_metadata: MetaData) -> None:
+        if self.engine.dialect.name == "sqlite":
+            with self._initialization_lock():
+                with self.transaction() as connection:
+                    target_metadata.create_all(connection)
+            return
+        target_metadata.create_all(self.engine)
+
     @contextmanager
     def _initialization_lock(self) -> Iterator[None]:
+        with self._database_lock("init"):
+            yield
+
+    @contextmanager
+    def _database_lock(self, name: str) -> Iterator[None]:
         if self._sqlite_path is None:
             yield
             return
         import fcntl
 
-        lock_path = Path("{}-init.lock".format(self._sqlite_path))
+        lock_path = Path("{}-{}.lock".format(self._sqlite_path, name))
         with lock_path.open("a") as lock_file:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             try:
@@ -260,15 +271,16 @@ class MarketDatabase:
     @contextmanager
     def transaction(self) -> Iterator[Connection]:
         if self.engine.dialect.name == "sqlite":
-            with self.engine.connect() as connection:
-                connection.exec_driver_sql("BEGIN IMMEDIATE")
-                try:
-                    yield connection
-                except BaseException:
-                    connection.rollback()
-                    raise
-                else:
-                    connection.commit()
+            with self._database_lock("write"):
+                with self.engine.connect() as connection:
+                    connection.exec_driver_sql("BEGIN IMMEDIATE")
+                    try:
+                        yield connection
+                    except BaseException:
+                        connection.rollback()
+                        raise
+                    else:
+                        connection.commit()
             return
         with self.engine.begin() as connection:
             yield connection
