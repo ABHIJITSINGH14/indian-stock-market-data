@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -78,6 +79,69 @@ class DatabaseTests(unittest.TestCase):
         finally:
             for database in databases:
                 database.engine.dispose()
+
+    def test_price_resolution_is_atomic_with_concurrent_security_merge(self):
+        path = Path(self.temp_dir.name) / "merge-race.db"
+        price_database = MarketDatabase("sqlite:///{}".format(path))
+        merge_database = MarketDatabase("sqlite:///{}".format(path))
+        price_database.initialize()
+        price_database.upsert_securities(
+            [
+                {
+                    "exchange": "NSE",
+                    "symbol": "ABC",
+                    "series": "EQ",
+                    "name": "ABC Limited",
+                    "source": "fixture",
+                }
+            ]
+        )
+        resolved = threading.Event()
+        release = threading.Event()
+        original_resolve = price_database._resolve_security
+
+        def paused_resolve(connection, record):
+            security_id = original_resolve(connection, record)
+            resolved.set()
+            self.assertTrue(release.wait(2))
+            return security_id
+
+        price_database._resolve_security = paused_resolve
+        price = {
+            "exchange": "NSE",
+            "symbol": "ABC",
+            "series": "EQ",
+            "trading_date": date(2024, 1, 2),
+            "close": 10.0,
+            "source": "fixture",
+        }
+        canonical = {
+            "exchange": "NSE",
+            "symbol": "ABC",
+            "series": "EQ",
+            "name": "ABC Limited",
+            "isin": "INE123A01010",
+            "source": "fixture",
+        }
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                price_future = executor.submit(price_database.upsert_prices, [price])
+                self.assertTrue(resolved.wait(2))
+                merge_future = executor.submit(
+                    merge_database.upsert_securities, [canonical]
+                )
+                self.assertFalse(merge_future.done())
+                release.set()
+                self.assertEqual(price_future.result(timeout=5), 1)
+                self.assertEqual(merge_future.result(timeout=5), 1)
+            with price_database.engine.connect() as connection:
+                self.assertEqual(
+                    connection.scalar(select(func.count()).select_from(daily_prices)), 1
+                )
+        finally:
+            release.set()
+            price_database.engine.dispose()
+            merge_database.engine.dispose()
 
     def test_price_upsert_resolves_bse_scrip_code_and_updates_in_place(self):
         self.database.upsert_securities(

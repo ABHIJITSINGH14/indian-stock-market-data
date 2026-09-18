@@ -259,6 +259,17 @@ class MarketDatabase:
 
     @contextmanager
     def transaction(self) -> Iterator[Connection]:
+        if self.engine.dialect.name == "sqlite":
+            with self.engine.connect() as connection:
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
+                try:
+                    yield connection
+                except BaseException:
+                    connection.rollback()
+                    raise
+                else:
+                    connection.commit()
+            return
         with self.engine.begin() as connection:
             yield connection
 
