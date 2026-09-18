@@ -18,6 +18,9 @@ from market_data.disclosures import (
     shareholding_institutional_split,
     shareholding_patterns,
     _url,
+    _date,
+    DisclosureSourceError,
+    NSEDisclosureClient,
 )
 
 
@@ -126,12 +129,38 @@ class FakeBSEClient:
                 "meeting_date": "17 Jul 2026",
                 "tm": "2026-07-17T00:00:00",
             }]}
+        if dataset == "financial_results":
+            return {"Data": "<table><tr><td>Official result index</td></tr></table>"}
         return {"Table": []}
 
 
 class BrokenDocumentClient(FakeClient):
     def document(self, url):
         raise RuntimeError("missing exchange document")
+
+
+class CircuitResponse:
+    def __init__(self, status, payload=None):
+        self.status_code = status
+        self.content = b"{}"
+        self.headers = {}
+        self._payload = payload or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError("HTTP {}".format(self.status_code))
+
+    def json(self):
+        return self._payload
+
+
+class CircuitSession:
+    def __init__(self):
+        self.calls = 0
+
+    def get(self, *args, **kwargs):
+        self.calls += 1
+        return CircuitResponse(403 if self.calls == 1 else 429)
 
 
 class DisclosureTests(unittest.TestCase):
@@ -158,6 +187,11 @@ class DisclosureTests(unittest.TestCase):
             "https://www.nseindia.com/corporate/example.xml",
         )
         self.assertIsNone(_url("https://nsearchives.nseindia.com/corporate/xbrl/-"))
+
+    def test_bse_iso_timestamp_is_parsed_as_filing_date(self):
+        self.assertEqual(
+            _date("2018-07-27T20:24:53.0"), date(2018, 7, 27)
+        )
 
     def test_collection_is_idempotent_and_keyed_to_security(self):
         collector = NSEDisclosureCollector(self.database, FakeClient())
@@ -243,6 +277,28 @@ class DisclosureTests(unittest.TestCase):
         self.assertEqual(counts["shareholding_failed"], 1)
         self.assertEqual(counts["corporate_actions"], 1)
 
+    def test_nse_circuit_breaker_opens_after_rate_limit(self):
+        session = CircuitSession()
+        clock = lambda: 100.0
+        client = NSEDisclosureClient(
+            session=session,
+            delay=0,
+            retries=0,
+            circuit_breaker_threshold=1,
+            sleep=lambda _: None,
+            clock=clock,
+        )
+        with self.assertRaisesRegex(DisclosureSourceError, "HTTP 429"):
+            client.index(
+                "financial_results", date(2026, 1, 1), date(2026, 1, 2)
+            )
+        calls = session.calls
+        with self.assertRaisesRegex(DisclosureSourceError, "circuit breaker"):
+            client.index(
+                "financial_results", date(2026, 1, 1), date(2026, 1, 2)
+            )
+        self.assertEqual(session.calls, calls)
+
     def test_bse_records_join_by_isin_or_scrip_mapping(self):
         self.database.upsert_securities([{
             "exchange": "BSE", "symbol": "RELIANCE", "scrip_code": "500325",
@@ -259,6 +315,28 @@ class DisclosureTests(unittest.TestCase):
             row = connection.execute(select(board_meetings)).mappings().one()
             self.assertEqual(row["symbol"], "RELIANCE")
             self.assertIsNotNone(row["security_id"])
+
+    def test_legacy_bse_html_result_index_is_preserved_without_pdf_parsing(self):
+        self.database.upsert_securities([{
+            "exchange": "BSE", "symbol": "RELIANCE", "scrip_code": "500325",
+            "isin": "INE002A01018", "name": "Reliance Industries Ltd",
+            "source": "test",
+        }])
+        counts = BSEDisclosureCollector(
+            self.database, FakeBSEClient()
+        ).collect(("financial_results",), ("500325",))
+
+        self.assertEqual(counts["financial_results"], 1)
+        with self.database.engine.connect() as connection:
+            filing = connection.execute(
+                select(filings).where(filings.c.exchange == "BSE")
+            ).mappings().one()
+            metric_count = connection.scalar(
+                select(func.count()).select_from(financial_metrics)
+            )
+        self.assertIn("Official result index", filing["raw_json"])
+        self.assertEqual(filing["document_sha256"], "")
+        self.assertEqual(metric_count, 0)
 
     def test_market_metrics_are_refreshed_from_prices(self):
         self.database.upsert_prices([{

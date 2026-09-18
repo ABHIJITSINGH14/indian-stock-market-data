@@ -399,6 +399,7 @@ class MarketDatabase:
             "filings",
             "shareholding_patterns",
             "financial_facts",
+            "financial_fact_instances",
             "corporate_actions",
             "board_meetings",
             "pit_disclosures",

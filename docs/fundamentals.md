@@ -110,3 +110,107 @@ expects logical financial columns `symbol`, `filing_date`, `period_end`,
 `metric`, `value`, and market columns `symbol`, `as_of`, `metric`, `value`.
 It selects the latest revision and observation available by the requested
 date. The adapter creates and mutates no schema.
+
+## Historical all-company backfill
+
+The installed `stock-fundamentals-backfill` command (or
+`python scripts/backfill_fundamentals.py`) uses NSE's bulk date-window indexes:
+
+- `corporates-financial-results` with `period=Quarterly`
+- `corporate-share-holdings-master`
+
+One request covers all equity symbols in a window. Linked XBRL downloads use a
+global minimum interval plus bounded worker concurrency; all SQLite parsing and
+writes remain on the coordinator thread. Every index row is stored before its
+document is attempted. Filings are keyed by exchange, dataset, official filing
+identity/revision, and document SHA, so a corrected document is preserved
+instead of replacing the original.
+
+```bash
+stock-fundamentals-backfill backfill \
+  --database-url sqlite:///data/databases/stock_market.db \
+  --start-date 2007-02-01 \
+  --end-date 2026-09-18 \
+  --datasets financial_results shareholding \
+  --window-days 30 \
+  --workers 3 \
+  --request-delay 0.75
+```
+
+Completed windows are skipped by default. A partial window is safe to rerun:
+successful documents come from the SHA-addressed local cache and only missing
+or failed documents are downloaded.
+
+```bash
+# Retry failed/partial/interrupted and previously unseen windows.
+stock-fundamentals-backfill backfill \
+  --database-url sqlite:///data/databases/stock_market.db \
+  --start-date 2007-02-01 --end-date 2026-09-18 \
+  --retry-failed
+
+# Revisit every window and force a document refresh.
+stock-fundamentals-backfill backfill \
+  --database-url sqlite:///data/databases/stock_market.db \
+  --start-date 2007-02-01 --end-date 2026-09-18 \
+  --no-resume --refresh-documents
+```
+
+`403` and `429` responses use bounded exponential backoff and open a circuit
+breaker after repeated blocks. `SIGINT`/Ctrl-C marks the active window
+`interrupted` and exits with status 130. Other failed documents are recorded
+and do not prevent the remaining filings or windows from completing.
+
+## Coverage report
+
+```bash
+stock-fundamentals-backfill report \
+  --database-url sqlite:///data/databases/stock_market.db
+stock-fundamentals-backfill report \
+  --database-url sqlite:///data/databases/stock_market.db --json
+```
+
+The report includes structured financial and index symbol counts, accounting
+periods, filings, lossless raw facts, canonical metric completeness by metric,
+ownership symbols/quarters and promoter/FII/DII/public completeness, stored,
+missing, and broken documents, checkpoint statuses, and the latest filings.
+
+## Official-source limitations
+
+Live bounded probes on 18 September 2026 established these public limits:
+
+- NSE financial-result metadata is dense from **2007-02-01**. All 2005-2006
+  period probes were empty.
+- Valid NSE financial XBRL begins **2018-05-21**. Older index rows are still
+  retained, but their `xbrl` field commonly ends in the invalid `/-`
+  placeholder.
+- NSE shareholding has sparse migrated records from **2016-01-13** and isolated
+  XBRL from **2018-04-13**, but broad all-company public bulk coverage begins
+  **2021-10-01**. Earlier ownership history must be labelled incomplete.
+- BSE's bulk result-announcement/PDF archive begins **2011-04-20**. PDFs are
+  retained only as index provenance and are never converted to metrics.
+- BSE's current `Corp_FinanceResult_ng_new/w` index exposes genuine XBRL through
+  `/XBRLFILES/`. Four representative issuer probes first exposed XBRL between
+  **2018-07-23** and **2018-10-11**. Historical discovery is per scrip code
+  (`FlagDur=7`), not an arbitrary-date bulk endpoint, so the runner checkpoints
+  each BSE scrip separately.
+
+NSE financial metadata before XBRL remains useful index provenance but cannot
+produce structured facts. Empty older windows do not prove that no filing
+existed outside the currently public archive. The backfill stores only official
+index values and linked XML/XBRL facts; it never substitutes scraped aggregators
+or fabricates missing metrics.
+
+For maximum official coverage, the full command includes both exchanges:
+
+```bash
+stock-fundamentals-backfill backfill \
+  --database-url sqlite:///data/databases/stock_market.db \
+  --exchange all \
+  --start-date 2007-02-01 --end-date 2026-09-18 \
+  --datasets financial_results shareholding \
+  --window-days 30 --workers 3 --request-delay 0.75
+```
+
+NSE uses bulk all-company windows. BSE financial history necessarily uses one
+official historical-index request per BSE scrip; `--bse-scrip-code` can bound a
+smoke or repair run.

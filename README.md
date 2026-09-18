@@ -27,6 +27,12 @@ python scripts/backfill.py coverage --exchange all --json
 python scripts/collect_disclosures.py \
   --exchange all --start-date 2026-07-01 --end-date 2026-09-18
 
+# Resumable all-company NSE financial and ownership history
+python scripts/backfill_fundamentals.py backfill \
+  --start-date 2007-02-01 --end-date 2026-09-18 \
+  --datasets financial_results shareholding
+python scripts/backfill_fundamentals.py report
+
 # Safe local fundamental screen
 python scripts/screen.py --where roe:gte:15 --where debt_equity:lt:1 \
   --sort roe:desc --limit 25
@@ -63,6 +69,10 @@ BSE data product, and this project does not substitute unofficial sources.
   non-institutional public ownership by symbol and quarter.
 - `financial_facts`, `financial_metrics`: taxonomy-independent raw XBRL facts
   and canonical quarterly metrics with filing/as-of provenance.
+- `financial_fact_instances`: lossless XBRL facts in source order, including
+  entity, context, period kind, dimensions, precision, nil state, and units.
+- `filing_index_checkpoints`, `filing_document_status`: resumable bulk-window
+  and linked-document state, including explicit partial/failure diagnostics.
 - `corporate_actions`, `board_meetings`, `pit_disclosures`,
   `sast_disclosures`: normalized exchange disclosures linked to securities.
 - `institutional_activity`: market-wide daily FII/FPI and DII cash activity.
@@ -86,6 +96,15 @@ per-scrip APIs enrich corporate actions, meetings, PIT and SAST disclosures.
 BSE's current shareholding API is not automated because it redirects to an
 exchange error page; the collector does not silently replace it with
 unofficial data. Review exchange terms before redistributing archived filings.
+
+The historical backfill calls each NSE date-window index once for the complete
+equity universe; it never loops over symbols when the bulk endpoint is
+available. Linked XBRL downloads are content-addressed, rate-limited, bounded
+in concurrency, and written to SQLite serially. BSE official financial XBRL is
+also supported from its per-scrip historical index; BSE PDFs are not parsed or
+converted into invented metrics. See
+[docs/fundamentals.md](docs/fundamentals.md) for resume, retry, coverage, and
+source-history details.
 
 ## License
 

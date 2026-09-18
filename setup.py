@@ -42,6 +42,7 @@ setup(
             'stock-market-data=scripts.run_all:main',
             'stock-market-backfill=scripts.backfill:main',
             'stock-market-disclosures=scripts.collect_disclosures:main',
+            'stock-fundamentals-backfill=scripts.backfill_fundamentals:main',
             'stock-screener=scripts.screen:main',
         ],
     },
