@@ -40,6 +40,7 @@ data/processed/*.xlsx
 data/databases/*.db
 data/databases/*.db-*
 data/backups/*.db
+data/backups/*.db-*
 
 # Logs
 logs/

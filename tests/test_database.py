@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
@@ -57,6 +58,26 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(
                 connection.scalar(select(func.count()).select_from(schema_migrations)), 1
             )
+
+    def test_concurrent_schema_initialization_is_serialized(self):
+        path = Path(self.temp_dir.name) / "concurrent.db"
+        databases = [
+            MarketDatabase("sqlite:///{}".format(path))
+            for _ in range(8)
+        ]
+        try:
+            with ThreadPoolExecutor(max_workers=len(databases)) as executor:
+                list(executor.map(lambda database: database.initialize(), databases))
+            with databases[0].engine.connect() as connection:
+                self.assertEqual(
+                    connection.scalar(
+                        select(func.count()).select_from(schema_migrations)
+                    ),
+                    1,
+                )
+        finally:
+            for database in databases:
+                database.engine.dispose()
 
     def test_price_upsert_resolves_bse_scrip_code_and_updates_in_place(self):
         self.database.upsert_securities(

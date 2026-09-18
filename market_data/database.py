@@ -196,10 +196,12 @@ def utcnow() -> datetime:
 class MarketDatabase:
     def __init__(self, database_url: str):
         self.database_url = database_url
+        self._sqlite_path: Optional[Path] = None
         if database_url.startswith("sqlite:///"):
             path = Path(database_url[len("sqlite:///") :])
             if str(path) != ":memory:":
                 path.parent.mkdir(parents=True, exist_ok=True)
+                self._sqlite_path = path
         self.engine = create_engine(database_url, future=True)
         if self.engine.dialect.name == "sqlite":
             event.listen(self.engine, "connect", self._configure_sqlite)
@@ -207,27 +209,53 @@ class MarketDatabase:
     @staticmethod
     def _configure_sqlite(dbapi_connection, _connection_record) -> None:
         cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA busy_timeout=30000")
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()
 
     def initialize(self) -> None:
+        if self.engine.dialect.name == "sqlite":
+            with self._initialization_lock():
+                with self.engine.connect() as connection:
+                    connection.exec_driver_sql("BEGIN IMMEDIATE")
+                    self._initialize_schema(connection)
+                    connection.commit()
+            return
         with self.engine.begin() as connection:
-            metadata.create_all(connection)
-            applied = connection.execute(
-                select(schema_migrations.c.version).where(
-                    schema_migrations.c.version == SCHEMA_VERSION
+            self._initialize_schema(connection)
+
+    @contextmanager
+    def _initialization_lock(self) -> Iterator[None]:
+        if self._sqlite_path is None:
+            yield
+            return
+        import fcntl
+
+        lock_path = Path("{}-init.lock".format(self._sqlite_path))
+        with lock_path.open("a") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    @staticmethod
+    def _initialize_schema(connection: Connection) -> None:
+        metadata.create_all(connection)
+        applied = connection.execute(
+            select(schema_migrations.c.version).where(
+                schema_migrations.c.version == SCHEMA_VERSION
+            )
+        ).scalar_one_or_none()
+        if applied is None:
+            connection.execute(
+                schema_migrations.insert().values(
+                    version=SCHEMA_VERSION,
+                    description="Historical backfill and archive coverage schema",
+                    applied_at=utcnow(),
                 )
-            ).scalar_one_or_none()
-            if applied is None:
-                connection.execute(
-                    schema_migrations.insert().values(
-                        version=SCHEMA_VERSION,
-                        description="Historical backfill and archive coverage schema",
-                        applied_at=utcnow(),
-                    )
-                )
+            )
 
     @contextmanager
     def transaction(self) -> Iterator[Connection]:
