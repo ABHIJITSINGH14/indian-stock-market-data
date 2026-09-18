@@ -263,7 +263,10 @@ class NSESource:
         for url in urls:
             try:
                 response = self.client.get(
-                    url, source=self.name, expected="zip"
+                    url,
+                    source=self.name,
+                    referer=NSE_BASE_URL,
+                    expected="zip",
                 )
                 return parse_nse_bhavcopy(response.content, trading_date)
             except Exception as exc:

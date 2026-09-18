@@ -30,6 +30,52 @@ python scripts/run_all.py all \
 python scripts/run_all.py prices --retry-failed --end-date 2024-12-31
 ```
 
+## Maximum-history backfill
+
+```bash
+# NSE 1994-11-03 onward and BSE 2006-03-01 onward, through the last completed session
+python scripts/backfill.py backfill \
+  --exchange all --workers 4 --request-delay 1.0
+
+# One exchange or explicit overrides
+python scripts/backfill.py backfill --exchange nse --nse-start 2000-01-01
+python scripts/backfill.py backfill --exchange bse --bse-start 2010-01-01
+python scripts/backfill.py backfill --exchange all \
+  --start-date 2020-01-01 --end-date 2025-12-31
+
+# Preview work without network access or writes
+python scripts/backfill.py backfill --exchange all --dry-run
+
+# Retry only genuine source/transient failures
+python scripts/backfill.py backfill --exchange all --retry-failed
+
+# Coverage and gap reports
+python scripts/backfill.py coverage --exchange all
+python scripts/backfill.py coverage --exchange all --json
+```
+
+Network downloads run concurrently, but all SQLite upserts and checkpoints are
+performed by one writer using short WAL transactions. The default is four
+workers total with a shared minimum one-second request-start interval per host.
+Each worker owns its HTTP session. HTTP retries use exponential backoff; after
+repeated HTTP 403 responses a shared host circuit opens, the affected exchange
+stops scheduling new dates, and the command exits non-zero. Wait for the
+exchange cooldown and rerun the identical command: successful and definitively
+unavailable dates are skipped, while blocked/unattempted dates remain pending.
+`Ctrl-C` exits 130 after preserving completed transactions.
+
+Weekends and reliable common exchange holidays (fixed national holidays,
+Christmas, and algorithmic Good Friday) are excluded locally. Definitive old
+official 404/no-file responses are recorded as `not_published`; the same
+response within ten days of the requested end remains a failure so unexpected
+recent gaps are not hidden. HTTP 403, HTML validation pages, and empty responses
+are always transient failures because they may indicate exchange rate blocking.
+
+The official public boundaries are NSE `1994-11-03` and BSE `2006-03-01`.
+No official annual bulk archive exists. BSE public CSV probes before March 2006
+do not yield files, so a true 40-year BSE dataset requires a paid BSE historical
+data product. Unofficial substitutes are intentionally not used.
+
 Without `--start-date`, price ingestion starts one day after that source's
 latest successful checkpoint. On a new database it requests only
 `--end-date` (today by default), making the default command a practical daily
@@ -85,9 +131,10 @@ audit.
 
 A single recent bhavcopy typically contains thousands of rows. A daily refresh
 takes seconds to minutes depending on exchange throttling. Multi-year ranges can
-take hours because requests are deliberately rate-limited. Allow roughly
-1-5 GB for broad multi-year NSE+BSE history; actual size varies with coverage
-and SQLite page growth.
+take roughly 4-10 hours for approximately 13,000 NSE+BSE trading dates at
+conservative pacing, and longer during exchange throttling or retries. Allow
+roughly 5-15 GB for maximum public history including SQLite WAL/headroom; actual
+size varies with archive coverage, securities, raw rows, and page growth.
 
 The legacy fundamentals, deals, corporate-action, and analysis scripts retain
 their CSV outputs under `data/raw/`. They are not part of the official

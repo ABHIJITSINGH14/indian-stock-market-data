@@ -22,6 +22,20 @@ python -m pip install -r requirements.txt
 python scripts/run_all.py init-db
 ```
 
+For a long-running macOS backfill, prevent sleep and keep the terminal attached:
+
+```bash
+caffeinate -i python3 scripts/backfill.py backfill \
+  --exchange all --workers 4 --request-delay 1.0
+```
+
+Stopping with `Ctrl-C` is safe. Run the same command again to resume from durable
+per-date checkpoints. Do not run two writers against the same database from
+different worktrees. For the maximum public archive, budget 4-10+ hours and
+5-15 GB of free disk space. NSE public coverage begins `1994-11-03`; BSE public
+CSV coverage begins `2006-03-01`. Earlier BSE history requires a paid BSE data
+product because no official free annual bulk archive is available.
+
 On Apple Silicon, the standard python.org installer or Homebrew Python is
 recommended if the older system Python cannot build an unrelated legacy
 analysis dependency.
@@ -50,6 +64,8 @@ python scripts/run_all.py init-db \
 python -m unittest discover -s tests -v
 python scripts/run_all.py --help
 python -m scripts.run_all --help
+python3 scripts/backfill.py --help
+python3 scripts/backfill.py coverage --exchange all
 ```
 
 Downloaded databases, CSVs, and logs are ignored by Git and must not be

@@ -38,7 +38,7 @@ from market_data.normalization import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 metadata = MetaData()
 
 schema_migrations = Table(
@@ -175,6 +175,19 @@ ingestion_errors = Table(
 )
 Index("ix_ingestion_errors_run", ingestion_errors.c.run_id)
 
+archive_availability = Table(
+    "archive_availability",
+    metadata,
+    Column("source", String(32), primary_key=True),
+    Column("year_month", String(7), primary_key=True),
+    Column("status", String(16), nullable=False),
+    Column("first_available_date", Date),
+    Column("last_available_date", Date),
+    Column("success_count", Integer, nullable=False, default=0),
+    Column("not_published_count", Integer, nullable=False, default=0),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -211,7 +224,7 @@ class MarketDatabase:
                 connection.execute(
                     schema_migrations.insert().values(
                         version=SCHEMA_VERSION,
-                        description="Initial canonical security and daily price schema",
+                        description="Historical backfill and archive coverage schema",
                         applied_at=utcnow(),
                     )
                 )
@@ -618,6 +631,145 @@ class MarketDatabase:
                 )
             ).scalars()
             return {item for item in rows if item is not None}
+
+    def checkpoint_dates(
+        self,
+        source: str,
+        dataset: str,
+        start: date,
+        end: date,
+        statuses: Sequence[str],
+    ) -> set:
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                select(ingestion_checkpoints.c.checkpoint_date).where(
+                    ingestion_checkpoints.c.source == source,
+                    ingestion_checkpoints.c.dataset == dataset,
+                    ingestion_checkpoints.c.status.in_(statuses),
+                    ingestion_checkpoints.c.checkpoint_date >= start,
+                    ingestion_checkpoints.c.checkpoint_date <= end,
+                )
+            ).scalars()
+            return {item for item in rows if item is not None}
+
+    def unavailable_months(self, source: str) -> set:
+        with self.engine.connect() as connection:
+            return set(
+                connection.execute(
+                    select(archive_availability.c.year_month).where(
+                        archive_availability.c.source == source,
+                        archive_availability.c.status == "unavailable",
+                    )
+                ).scalars()
+            )
+
+    def refresh_month_availability(self, source: str, year_month: str) -> None:
+        from market_data.calendar import trading_days
+
+        start = date.fromisoformat(year_month + "-01")
+        if start.month == 12:
+            end = date(start.year + 1, 1, 1) - date.resolution
+        else:
+            end = date(start.year, start.month + 1, 1) - date.resolution
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                select(
+                    ingestion_checkpoints.c.status,
+                    ingestion_checkpoints.c.checkpoint_date,
+                ).where(
+                    ingestion_checkpoints.c.source == source,
+                    ingestion_checkpoints.c.dataset == "daily_prices",
+                    ingestion_checkpoints.c.checkpoint_date >= start,
+                    ingestion_checkpoints.c.checkpoint_date <= end,
+                )
+            ).all()
+        successes = [item[1] for item in rows if item[0] == "success"]
+        unavailable = sum(item[0] == "not_published" for item in rows)
+        expected = len(list(trading_days(start, end)))
+        status = (
+            "available"
+            if successes
+            else "unavailable"
+            if unavailable >= expected
+            else "unknown"
+        )
+        statement = sqlite_insert(archive_availability).values(
+            source=source,
+            year_month=year_month,
+            status=status,
+            first_available_date=min(successes) if successes else None,
+            last_available_date=max(successes) if successes else None,
+            success_count=len(successes),
+            not_published_count=unavailable,
+            updated_at=utcnow(),
+        )
+        with self.transaction() as connection:
+            connection.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[
+                        archive_availability.c.source,
+                        archive_availability.c.year_month,
+                    ],
+                    set_={
+                        "status": statement.excluded.status,
+                        "first_available_date": statement.excluded.first_available_date,
+                        "last_available_date": statement.excluded.last_available_date,
+                        "success_count": statement.excluded.success_count,
+                        "not_published_count": statement.excluded.not_published_count,
+                        "updated_at": statement.excluded.updated_at,
+                    },
+                )
+            )
+
+    def coverage_snapshot(self, source: str, start: date, end: date) -> Dict[str, object]:
+        with self.engine.connect() as connection:
+            prices = connection.execute(
+                select(
+                    func.min(daily_prices.c.trading_date),
+                    func.max(daily_prices.c.trading_date),
+                    func.count(),
+                    func.count(func.distinct(daily_prices.c.security_id)),
+                    func.count(func.distinct(daily_prices.c.trading_date)),
+                    func.max(daily_prices.c.updated_at),
+                ).where(
+                    daily_prices.c.exchange == source.upper(),
+                    daily_prices.c.trading_date >= start,
+                    daily_prices.c.trading_date <= end,
+                )
+            ).one()
+            status_rows = connection.execute(
+                select(
+                    ingestion_checkpoints.c.status,
+                    func.count(),
+                ).where(
+                    ingestion_checkpoints.c.source == source,
+                    ingestion_checkpoints.c.dataset == "daily_prices",
+                    ingestion_checkpoints.c.checkpoint_date >= start,
+                    ingestion_checkpoints.c.checkpoint_date <= end,
+                ).group_by(ingestion_checkpoints.c.status)
+            ).all()
+            present = set(
+                connection.execute(
+                    select(daily_prices.c.trading_date).distinct().where(
+                        daily_prices.c.exchange == source.upper(),
+                        daily_prices.c.trading_date >= start,
+                        daily_prices.c.trading_date <= end,
+                    )
+                ).scalars()
+            )
+        return {
+            "exchange": source.upper(),
+            "start": start,
+            "end": end,
+            "earliest": prices[0],
+            "latest": prices[1],
+            "rows": int(prices[2] or 0),
+            "distinct_securities": int(prices[3] or 0),
+            "present_days": int(prices[4] or 0),
+            "last_update": prices[5],
+            "status_counts": {status: count for status, count in status_rows},
+            "present_dates": present,
+        }
 
     def latest_successful_date(self, source: str, dataset: str) -> Optional[date]:
         with self.engine.connect() as connection:

@@ -1,6 +1,8 @@
 """Official exchange HTTP client with throttling and content validation."""
 
+import threading
 import time
+from urllib.parse import urlparse
 from typing import Dict, Optional
 
 import requests
@@ -12,6 +14,50 @@ class SourceResponseError(RuntimeError):
     pass
 
 
+class HostCircuitOpen(SourceResponseError):
+    pass
+
+
+class HostRateLimiter:
+    """Serialize request starts per host without serializing response downloads."""
+
+    def __init__(self, delay: float, failure_threshold: int = 3, cooldown: float = 300.0):
+        self.delay = max(0.0, delay)
+        self.failure_threshold = failure_threshold
+        self.cooldown = cooldown
+        self._lock = threading.Lock()
+        self._next_request = {}
+        self._forbidden = {}
+        self._blocked_until = {}
+
+    def wait(self, url: str) -> None:
+        host = urlparse(url).netloc.lower()
+        with self._lock:
+            now = time.monotonic()
+            blocked_until = self._blocked_until.get(host, 0.0)
+            if blocked_until > now:
+                raise HostCircuitOpen(
+                    "{} circuit open after repeated HTTP 403 responses; retry after cooldown".format(
+                        host
+                    )
+                )
+            wait_for = max(0.0, self._next_request.get(host, now) - now)
+            if wait_for:
+                time.sleep(wait_for)
+            self._next_request[host] = time.monotonic() + self.delay
+
+    def response(self, url: str, status_code: int) -> None:
+        host = urlparse(url).netloc.lower()
+        with self._lock:
+            if status_code == 403:
+                failures = self._forbidden.get(host, 0) + 1
+                self._forbidden[host] = failures
+                if failures >= self.failure_threshold:
+                    self._blocked_until[host] = time.monotonic() + self.cooldown
+            elif status_code < 400:
+                self._forbidden[host] = 0
+
+
 class ExchangeHTTPClient:
     def __init__(
         self,
@@ -19,10 +65,12 @@ class ExchangeHTTPClient:
         delay: float = 0.5,
         retries: int = 3,
         session: Optional[requests.Session] = None,
+        rate_limiter: Optional[HostRateLimiter] = None,
     ):
         self.timeout = timeout
         self.delay = delay
         self.session = session or requests.Session()
+        self.rate_limiter = rate_limiter
         retry = Retry(
             total=retries,
             connect=retries,
@@ -50,10 +98,15 @@ class ExchangeHTTPClient:
     def bootstrap(self, source: str, base_url: str) -> None:
         if source in self._bootstrapped:
             return
+        self._wait(base_url)
         response = self.session.get(
             base_url, headers=self.headers, timeout=self.timeout
         )
+        if self.rate_limiter and response.status_code == 403:
+            self.rate_limiter.response(base_url, response.status_code)
         response.raise_for_status()
+        if self.rate_limiter:
+            self.rate_limiter.response(base_url, response.status_code)
         self._bootstrapped.add(source)
 
     def get(
@@ -61,22 +114,32 @@ class ExchangeHTTPClient:
         url: str,
         source: str,
         base_url: Optional[str] = None,
+        referer: Optional[str] = None,
         params: Optional[Dict[str, object]] = None,
         expected: Optional[str] = None,
     ) -> requests.Response:
         if base_url:
             self.bootstrap(source, base_url)
-        if self.delay:
-            time.sleep(self.delay)
+        self._wait(url)
         headers = dict(self.headers)
-        if base_url:
-            headers["Referer"] = base_url
+        if referer or base_url:
+            headers["Referer"] = referer or base_url
         response = self.session.get(
             url, params=params, headers=headers, timeout=self.timeout
         )
+        if self.rate_limiter and response.status_code == 403:
+            self.rate_limiter.response(url, response.status_code)
         response.raise_for_status()
         self._validate(response, expected)
+        if self.rate_limiter:
+            self.rate_limiter.response(url, response.status_code)
         return response
+
+    def _wait(self, url: str) -> None:
+        if self.rate_limiter:
+            self.rate_limiter.wait(url)
+        elif self.delay:
+            time.sleep(self.delay)
 
     @staticmethod
     def _validate(response: requests.Response, expected: Optional[str]) -> None:

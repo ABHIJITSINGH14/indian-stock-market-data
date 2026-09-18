@@ -16,6 +16,13 @@ python scripts/run_all.py init-db
 python scripts/run_all.py masters
 python scripts/run_all.py prices --start-date 2024-01-01 --end-date 2024-01-31
 
+# Maximum official history; safely resume by running the same command again
+python scripts/backfill.py backfill --exchange all --workers 4 --request-delay 1.0
+
+# Human-readable or JSON coverage/gap report
+python scripts/backfill.py coverage --exchange all
+python scripts/backfill.py coverage --exchange all --json
+
 # Official filings, XBRL fundamentals, ownership and regulatory disclosures
 python scripts/collect_disclosures.py \
   --exchange all --start-date 2026-07-01 --end-date 2026-09-18
@@ -35,6 +42,12 @@ The default database is `data/databases/stock_market.db`. Repeating a command
 is safe: security mappings and daily prices are upserted transactionally, and
 successful price dates are skipped. Failed exchange/date downloads are recorded
 and make the command exit non-zero while other dates and sources continue.
+
+The dedicated historical backfill defaults to NSE `1994-11-03` and BSE
+`2006-03-01`, the first verified reachable files in the exchanges' public
+daily archives. There are no official annual bulk archives. Public BSE files
+before March 2006 are not available; a true 40-year BSE history requires a paid
+BSE data product, and this project does not substitute unofficial sources.
 
 ## Data model
 
