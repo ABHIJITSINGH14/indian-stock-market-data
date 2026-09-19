@@ -41,6 +41,10 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _document_failure_status(error: Exception) -> str:
+    return "unavailable" if "404 Client Error" in str(error) else "failed"
+
+
 class FundamentalBackfill:
     """Fetch bulk filing indexes sequentially and linked documents concurrently."""
 
@@ -109,6 +113,7 @@ class FundamentalBackfill:
             "documents_cached": 0,
             "documents_failed": 0,
             "documents_missing": 0,
+            "documents_unavailable": 0,
             "interrupted": False,
         }
         started = self.clock()
@@ -140,6 +145,7 @@ class FundamentalBackfill:
                         "documents_cached",
                         "documents_failed",
                         "documents_missing",
+                        "documents_unavailable",
                     ):
                         summary[key] += result[key]
                     final_status = "partial" if result["documents_failed"] else "complete"
@@ -188,6 +194,7 @@ class FundamentalBackfill:
             "documents_cached": 0,
             "documents_failed": 0,
             "documents_missing": 0,
+            "documents_unavailable": 0,
         }
         downloads: Dict[Future, Tuple[Mapping[str, object], str]] = {}
         with ThreadPoolExecutor(
@@ -204,6 +211,13 @@ class FundamentalBackfill:
                 cached = None if refresh_documents else self.store.cached_document(
                     row, dataset, url
                 )
+                if (
+                    cached is None
+                    and not refresh_documents
+                    and self.store.document_status(dataset, row, url) == "unavailable"
+                ):
+                    result["documents_unavailable"] += 1
+                    continue
                 if cached is not None:
                     body, content_type, digest = cached
                     try:
@@ -215,8 +229,12 @@ class FundamentalBackfill:
                         )
                         result["documents_cached"] += 1
                     except Exception as exc:
-                        self._document_failure(dataset, row, url, exc)
-                        result["documents_failed"] += 1
+                        status = self._document_failure(dataset, row, url, exc)
+                        result[
+                            "documents_unavailable"
+                            if status == "unavailable"
+                            else "documents_failed"
+                        ] += 1
                     continue
                 self.store.set_document_status(
                     dataset, row, url, "pending", increment_attempt=True
@@ -242,8 +260,12 @@ class FundamentalBackfill:
                         )
                         result["documents"] += 1
                     except Exception as exc:
-                        self._document_failure(dataset, row, url, exc)
-                        result["documents_failed"] += 1
+                        status = self._document_failure(dataset, row, url, exc)
+                        result[
+                            "documents_unavailable"
+                            if status == "unavailable"
+                            else "documents_failed"
+                        ] += 1
             except KeyboardInterrupt:
                 for future in downloads:
                     future.cancel()
@@ -270,9 +292,11 @@ class FundamentalBackfill:
         row: Mapping[str, object],
         url: str,
         error: Exception,
-    ) -> None:
+    ) -> str:
+        status = _document_failure_status(error)
         self.store.error("NSE", dataset, row, error, url)
-        self.store.set_document_status(dataset, row, url, "failed", error=error)
+        self.store.set_document_status(dataset, row, url, status, error=error)
+        return status
 
     def _checkpoint_status(
         self, dataset: str, window_start: date, window_end: date
@@ -421,6 +445,7 @@ class BSEFundamentalBackfill:
             "documents": 0,
             "documents_cached": 0,
             "documents_failed": 0,
+            "documents_unavailable": 0,
             "interrupted": False,
         }
         started = time.monotonic()
@@ -451,7 +476,12 @@ class BSEFundamentalBackfill:
                         continue
                     candidates.extend(self._xbrl_candidates(row))
                 result = self._documents(candidates, refresh_documents)
-                for key in ("documents", "documents_cached", "documents_failed"):
+                for key in (
+                    "documents",
+                    "documents_cached",
+                    "documents_failed",
+                    "documents_unavailable",
+                ):
                     summary[key] += result[key]
                 final = "partial" if result["documents_failed"] else "complete"
                 self._checkpoint(
@@ -533,7 +563,12 @@ class BSEFundamentalBackfill:
         candidates: Sequence[Tuple[Mapping[str, object], str]],
         refresh_documents: bool,
     ) -> Dict[str, int]:
-        result = {"documents": 0, "documents_cached": 0, "documents_failed": 0}
+        result = {
+            "documents": 0,
+            "documents_cached": 0,
+            "documents_failed": 0,
+            "documents_unavailable": 0,
+        }
         futures = {}
         with ThreadPoolExecutor(
             max_workers=self.workers, thread_name_prefix="bse-xbrl-download"
@@ -542,6 +577,16 @@ class BSEFundamentalBackfill:
                 cached = None if refresh_documents else self.store.cached_document(
                     row, "financial_results", url, exchange="BSE"
                 )
+                if (
+                    cached is None
+                    and not refresh_documents
+                    and self.store.document_status(
+                        "financial_results", row, url, exchange="BSE"
+                    )
+                    == "unavailable"
+                ):
+                    result["documents_unavailable"] += 1
+                    continue
                 if cached:
                     body, content_type, digest = cached
                     try:
@@ -555,8 +600,12 @@ class BSEFundamentalBackfill:
                         )
                         result["documents_cached"] += 1
                     except Exception as exc:
-                        self._failure(row, url, exc)
-                        result["documents_failed"] += 1
+                        status = self._failure(row, url, exc)
+                        result[
+                            "documents_unavailable"
+                            if status == "unavailable"
+                            else "documents_failed"
+                        ] += 1
                     continue
                 self.store.set_document_status(
                     "financial_results", row, url, "pending",
@@ -580,8 +629,12 @@ class BSEFundamentalBackfill:
                     )
                     result["documents"] += 1
                 except Exception as exc:
-                    self._failure(row, url, exc)
-                    result["documents_failed"] += 1
+                    status = self._failure(row, url, exc)
+                    result[
+                        "documents_unavailable"
+                        if status == "unavailable"
+                        else "documents_failed"
+                    ] += 1
         return result
 
     def _download(self, url: str) -> Tuple[bytes, str]:
@@ -605,12 +658,14 @@ class BSEFundamentalBackfill:
 
     def _failure(
         self, row: Mapping[str, object], url: str, error: Exception
-    ) -> None:
+    ) -> str:
+        status = _document_failure_status(error)
         self.store.error("BSE", "financial_results", row, error, url)
         self.store.set_document_status(
-            "financial_results", row, url, "failed",
+            "financial_results", row, url, status,
             error=error, exchange="BSE",
         )
+        return status
 
     def _status(self, code: str, start: date, end: date) -> Optional[str]:
         with self.database.engine.connect() as connection:

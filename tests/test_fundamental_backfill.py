@@ -3,6 +3,7 @@ import time
 from datetime import date
 
 import pytest
+from requests import HTTPError
 from sqlalchemy import func, select
 
 from market_data.database import MarketDatabase
@@ -89,6 +90,12 @@ class FakeClient:
 class InterruptingClient(FakeClient):
     def index(self, dataset, start=None, end=None, symbol=None):
         raise KeyboardInterrupt()
+
+
+class NotFoundClient(FakeClient):
+    def document(self, url):
+        self.document_calls.append(url)
+        raise HTTPError("404 Client Error: Not Found for url: {}".format(url))
 
 
 class FakeBSEHistoryClient:
@@ -233,6 +240,31 @@ def test_failed_document_continues_and_retry_only_fetches_failure(database):
     assert attempts[good["xbrl"]] == 1
     assert attempts[bad["xbrl"]] == 2
     assert checkpoint == "complete"
+
+
+def test_unavailable_document_is_not_retried(database):
+    client = NotFoundClient()
+    backfill = runner(database, client)
+    first = backfill.run(
+        date(2026, 7, 1),
+        date(2026, 7, 1),
+        datasets=("financial_results",),
+    )
+    second = backfill.run(
+        date(2026, 7, 1),
+        date(2026, 7, 1),
+        datasets=("financial_results",),
+        resume=False,
+    )
+
+    assert first["documents_unavailable"] == 1
+    assert first["documents_failed"] == 0
+    assert second["documents_unavailable"] == 1
+    assert client.document_calls == ["https://example.test/fin-1.xml"]
+    with database.engine.connect() as connection:
+        assert connection.scalar(
+            select(filing_document_status.c.status)
+        ) == "unavailable"
 
 
 def test_quarter_context_coverage_and_idempotency(database):

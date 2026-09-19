@@ -953,6 +953,24 @@ class DisclosureStore:
                 )
             )
 
+    def document_status(
+        self,
+        dataset: str,
+        record: Mapping[str, object],
+        url: str,
+        exchange: str = "NSE",
+    ) -> Optional[str]:
+        with self.database.engine.connect() as connection:
+            return connection.scalar(
+                select(filing_document_status.c.status).where(
+                    filing_document_status.c.exchange == exchange,
+                    filing_document_status.c.dataset == dataset,
+                    filing_document_status.c.external_id
+                    == _external_id(record, dataset),
+                    filing_document_status.c.document_url == url,
+                )
+            )
+
     def document(
         self, filing_id: int, url: str, body: bytes, content_type: str
     ) -> str:
