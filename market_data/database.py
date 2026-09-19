@@ -512,7 +512,6 @@ class MarketDatabase:
             for record in records:
                 exchange = normalize_exchange(record["exchange"])
                 security_id = self._resolve_security(connection, record)
-                raw_data = record.get("raw_data")
                 values.append(
                     {
                         "security_id": security_id,
@@ -530,9 +529,7 @@ class MarketDatabase:
                         "trades": record.get("trades"),
                         "deliverable_quantity": record.get("deliverable_quantity"),
                         "source": clean_text(record.get("source")) or exchange.lower(),
-                        "raw_data": json.dumps(raw_data, sort_keys=True, default=str)
-                        if raw_data is not None
-                        else None,
+                        "raw_data": None,
                         "created_at": now,
                         "updated_at": now,
                     }

@@ -60,7 +60,9 @@ BSE data product, and this project does not substitute unofficial sources.
 - `securities`: canonical company/security identity, preferring ISIN.
 - `exchange_symbols`: raw and normalized NSE/BSE aliases, series, and BSE scrip
   codes linked to one canonical security.
-- `daily_prices`: exchange/date/series OHLCV bhavcopy observations.
+- `daily_prices`: exchange/date/series OHLCV bhavcopy observations. Parsed typed
+  fields and source provenance are retained; duplicate per-row source JSON is
+  omitted so multi-decade history remains practical in local SQLite.
 - `ingestion_runs`, `ingestion_checkpoints`, `ingestion_errors`: truthful run
   status, incremental progress, and source failures.
 - `filings`, `raw_documents`: revision-aware filing indexes and content-hashed

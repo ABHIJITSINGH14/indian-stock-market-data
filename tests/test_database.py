@@ -202,6 +202,7 @@ class DatabaseTests(unittest.TestCase):
                 connection.scalar(select(func.count()).select_from(daily_prices)), 1
             )
             self.assertEqual(connection.scalar(select(daily_prices.c.close)), 101.5)
+            self.assertIsNone(connection.scalar(select(daily_prices.c.raw_data)))
 
     def test_master_merges_price_fallback_identity_into_isin_identity(self):
         price = {
