@@ -39,6 +39,7 @@ def parse_xbrl(
     xml: bytes,
     identity: FilingIdentity,
     ignore_unknown_contexts: bool = False,
+    allow_legacy_encoding: bool = False,
 ) -> ParsedFiling:
     """Parse an XBRL instance without resolving entities, DTDs, or networks."""
     if not isinstance(xml, bytes):
@@ -54,10 +55,20 @@ def parse_xbrl(
         huge_tree=False,
         remove_comments=True,
     )
+    source_encoding_repair = None
     try:
         root = etree.parse(BytesIO(xml), parser).getroot()
     except (etree.XMLSyntaxError, ValueError) as exc:
-        raise XBRLParseError("invalid XBRL XML: {}".format(exc)) from exc
+        if not allow_legacy_encoding or "UTF-8" not in str(exc).upper():
+            raise XBRLParseError("invalid XBRL XML: {}".format(exc)) from exc
+        try:
+            repaired = xml.decode("windows-1252").encode("utf-8")
+            root = etree.parse(BytesIO(repaired), parser).getroot()
+        except (UnicodeError, etree.XMLSyntaxError, ValueError) as repair_exc:
+            raise XBRLParseError(
+                "invalid XBRL XML after Windows-1252 repair: {}".format(repair_exc)
+            ) from repair_exc
+        source_encoding_repair = "windows-1252"
 
     contexts = tuple(_parse_context(node) for node in root.findall(_x("context")))
     context_by_id = {context.context_id: context for context in contexts}
@@ -107,6 +118,7 @@ def parse_xbrl(
         tuple(facts),
         unknown_context_fact_count,
         tuple(sorted(unknown_context_ids)),
+        source_encoding_repair,
     )
 
 

@@ -169,3 +169,10 @@ def test_parser_rejects_dtd_and_unknown_context():
     assert len(tolerant.facts) == len(original.facts) - 1
     assert tolerant.unknown_context_fact_count == 1
     assert tolerant.unknown_context_ids == ("does-not-exist",)
+
+    legacy = XBRL.replace(b"not numeric", b"company\x92s")
+    with pytest.raises(XBRLParseError, match="UTF-8"):
+        parse_xbrl(legacy, identity())
+    repaired = parse_xbrl(legacy, identity(), allow_legacy_encoding=True)
+    assert repaired.source_encoding_repair == "windows-1252"
+    assert repaired.facts[-1].value == "company\u2019s"

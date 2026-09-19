@@ -1231,7 +1231,12 @@ class NSEDisclosureCollector:
             cumulative=_boolean(_first(row, "cumulative")),
             audited=_boolean(_first(row, "audited")),
         )
-        parsed = parse_xbrl(body, identity, ignore_unknown_contexts=True)
+        parsed = parse_xbrl(
+            body,
+            identity,
+            ignore_unknown_contexts=True,
+            allow_legacy_encoding=True,
+        )
         if parsed.unknown_context_fact_count:
             self.store.error(
                 exchange,
@@ -1241,6 +1246,18 @@ class NSEDisclosureCollector:
                     "Skipped {} facts referencing unknown contexts: {}".format(
                         parsed.unknown_context_fact_count,
                         ", ".join(parsed.unknown_context_ids),
+                    )
+                ),
+                url,
+            )
+        if parsed.source_encoding_repair:
+            self.store.error(
+                exchange,
+                "financial_results",
+                row,
+                XBRLDataWarning(
+                    "Repaired source XML declared as UTF-8 using {}".format(
+                        parsed.source_encoding_repair
                     )
                 ),
                 url,

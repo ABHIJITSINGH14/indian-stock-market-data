@@ -117,3 +117,4 @@ class ParsedFiling:
     facts: Tuple[FactRecord, ...]
     unknown_context_fact_count: int = 0
     unknown_context_ids: Tuple[str, ...] = ()
+    source_encoding_repair: Optional[str] = None
