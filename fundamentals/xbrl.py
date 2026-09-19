@@ -35,7 +35,11 @@ class XBRLParseError(ValueError):
     """Raised when an XBRL instance is unsafe or structurally invalid."""
 
 
-def parse_xbrl(xml: bytes, identity: FilingIdentity) -> ParsedFiling:
+def parse_xbrl(
+    xml: bytes,
+    identity: FilingIdentity,
+    ignore_unknown_contexts: bool = False,
+) -> ParsedFiling:
     """Parse an XBRL instance without resolving entities, DTDs, or networks."""
     if not isinstance(xml, bytes):
         raise TypeError("xml must be bytes")
@@ -59,6 +63,8 @@ def parse_xbrl(xml: bytes, identity: FilingIdentity) -> ParsedFiling:
     context_by_id = {context.context_id: context for context in contexts}
     units = tuple(_parse_unit(node) for node in root.findall(_x("unit")))
     facts: List[FactRecord] = []
+    unknown_context_fact_count = 0
+    unknown_context_ids = set()
 
     for node in root.iterchildren():
         local_name = etree.QName(node).localname
@@ -70,6 +76,10 @@ def parse_xbrl(xml: bytes, identity: FilingIdentity) -> ParsedFiling:
         try:
             context = context_by_id[context_ref]
         except KeyError as exc:
+            if ignore_unknown_contexts:
+                unknown_context_fact_count += 1
+                unknown_context_ids.add(context_ref)
+                continue
             raise XBRLParseError(
                 "fact {} references unknown context {}".format(local_name, context_ref)
             ) from exc
@@ -90,7 +100,14 @@ def parse_xbrl(xml: bytes, identity: FilingIdentity) -> ParsedFiling:
             )
         )
 
-    return ParsedFiling(identity, contexts, units, tuple(facts))
+    return ParsedFiling(
+        identity,
+        contexts,
+        units,
+        tuple(facts),
+        unknown_context_fact_count,
+        tuple(sorted(unknown_context_ids)),
+    )
 
 
 def _x(local_name: str) -> str:
@@ -219,4 +236,3 @@ def _decimal_or_none(value: str) -> Optional[Decimal]:
         return Decimal(normalized)
     except InvalidOperation:
         return None
-

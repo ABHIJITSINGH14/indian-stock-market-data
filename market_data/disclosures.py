@@ -344,6 +344,10 @@ class DisclosureSourceError(RuntimeError):
     pass
 
 
+class XBRLDataWarning(ValueError):
+    """Malformed source facts were skipped while valid facts were retained."""
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -1227,7 +1231,20 @@ class NSEDisclosureCollector:
             cumulative=_boolean(_first(row, "cumulative")),
             audited=_boolean(_first(row, "audited")),
         )
-        parsed = parse_xbrl(body, identity)
+        parsed = parse_xbrl(body, identity, ignore_unknown_contexts=True)
+        if parsed.unknown_context_fact_count:
+            self.store.error(
+                exchange,
+                "financial_results",
+                row,
+                XBRLDataWarning(
+                    "Skipped {} facts referencing unknown contexts: {}".format(
+                        parsed.unknown_context_fact_count,
+                        ", ".join(parsed.unknown_context_ids),
+                    )
+                ),
+                url,
+            )
         with self.store.database.transaction() as connection:
             connection.execute(
                 financial_facts.delete().where(

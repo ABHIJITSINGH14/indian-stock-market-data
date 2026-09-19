@@ -115,4 +115,5 @@ class ParsedFiling:
     contexts: Tuple[ContextRecord, ...]
     units: Tuple[UnitRecord, ...]
     facts: Tuple[FactRecord, ...]
-
+    unknown_context_fact_count: int = 0
+    unknown_context_ids: Tuple[str, ...] = ()

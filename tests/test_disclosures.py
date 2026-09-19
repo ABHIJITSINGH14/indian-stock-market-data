@@ -13,7 +13,9 @@ from market_data.disclosures import (
     NSEDisclosureCollector,
     board_meetings,
     corporate_actions,
+    disclosure_errors,
     filings,
+    financial_facts,
     financial_metrics,
     institutional_activity,
     market_metrics,
@@ -140,6 +142,18 @@ class FakeBSEClient:
 class BrokenDocumentClient(FakeClient):
     def document(self, url):
         raise RuntimeError("missing exchange document")
+
+
+class OrphanContextClient(FakeClient):
+    def document(self, url):
+        return (
+            FINANCIAL_XBRL.replace(
+                b'contextRef="quarter"',
+                b'contextRef="missing-context"',
+                1,
+            ),
+            "application/xml",
+        )
 
 
 class CircuitResponse:
@@ -300,6 +314,24 @@ class DisclosureTests(unittest.TestCase):
                 )
             ).scalar_one()
         self.assertEqual(revenue, 100.0)
+
+    def test_financial_filing_retains_facts_with_valid_contexts(self):
+        collector = NSEDisclosureCollector(self.database, OrphanContextClient())
+        collector.collect(
+            date(2026, 9, 11),
+            date(2026, 9, 17),
+            ("financial_results",),
+        )
+        with self.database.engine.connect() as connection:
+            self.assertEqual(
+                connection.scalar(select(func.count()).select_from(financial_facts)),
+                1,
+            )
+            warning = connection.execute(
+                select(disclosure_errors.c.error_type, disclosure_errors.c.message)
+            ).one()
+        self.assertEqual(warning.error_type, "XBRLDataWarning")
+        self.assertIn("missing-context", warning.message)
 
     def test_invalid_activity_net_is_rejected(self):
         collector = NSEDisclosureCollector(self.database, FakeClient())

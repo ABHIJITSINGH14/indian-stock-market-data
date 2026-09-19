@@ -164,3 +164,8 @@ def test_parser_rejects_dtd_and_unknown_context():
     with pytest.raises(XBRLParseError, match="unknown context"):
         parse_xbrl(unknown, identity())
 
+    original = parse_xbrl(XBRL, identity())
+    tolerant = parse_xbrl(unknown, identity(), ignore_unknown_contexts=True)
+    assert len(tolerant.facts) == len(original.facts) - 1
+    assert tolerant.unknown_context_fact_count == 1
+    assert tolerant.unknown_context_ids == ("does-not-exist",)
