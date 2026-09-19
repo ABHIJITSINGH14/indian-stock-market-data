@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import unittest
 from datetime import date
@@ -8,6 +9,7 @@ from sqlalchemy import func, select
 from market_data.database import MarketDatabase, securities
 from market_data.disclosures import (
     BSEDisclosureCollector,
+    DisclosureStore,
     NSEDisclosureCollector,
     board_meetings,
     corporate_actions,
@@ -15,6 +17,7 @@ from market_data.disclosures import (
     financial_metrics,
     institutional_activity,
     market_metrics,
+    raw_documents,
     shareholding_institutional_split,
     shareholding_patterns,
     _url,
@@ -178,6 +181,46 @@ class DisclosureTests(unittest.TestCase):
         fii, dii = shareholding_institutional_split(SHAREHOLDING_XBRL)
         self.assertEqual(fii, 17.0)
         self.assertEqual(dii, 10.0)
+
+    def test_cached_documents_are_losslessly_compressed(self):
+        store = DisclosureStore(self.database)
+        store.initialize()
+        record = {
+            "symbol": "ABC",
+            "isin": "INE123A01010",
+            "seqNumber": "compressed-1",
+            "filingDate": "17-Sep-2026",
+        }
+        body = b"<xbrl>" + (b"<value>1234567890</value>" * 1000) + b"</xbrl>"
+        expected_digest = hashlib.sha256(body).hexdigest()
+        filing_id, _, _ = store.filing(
+            record,
+            "financial_results",
+            document_url="https://example.test/result.xml",
+            document_sha256=expected_digest,
+        )
+        digest = store.document(
+            filing_id,
+            "https://example.test/result.xml",
+            body,
+            "application/xml",
+        )
+        with self.database.engine.connect() as connection:
+            stored = connection.execute(
+                select(raw_documents.c.body).where(raw_documents.c.sha256 == digest)
+            ).scalar_one()
+        self.assertLess(len(stored), len(body))
+        cached = store.cached_document(
+            record,
+            "financial_results",
+            "https://example.test/result.xml",
+        )
+        self.assertEqual(cached, (body, "application/xml", digest))
+        self.assertEqual(store.compress_documents(), {
+            "scanned": 1,
+            "compressed": 0,
+            "bytes_saved": 0,
+        })
 
     def test_exchange_url_sentinels_are_not_downloaded(self):
         self.assertIsNone(_url("-"))

@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import time
+import zlib
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
@@ -12,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from sqlalchemy import (
     Boolean,
+    bindparam,
     Column,
     Date,
     DateTime,
@@ -43,6 +45,23 @@ from market_data.database import (
     securities,
 )
 from market_data.normalization import clean_text, normalize_symbol
+
+
+_COMPRESSED_BODY_PREFIX = b"ISMDZ1\x00"
+
+
+def _encode_document_body(body: bytes) -> bytes:
+    if body.startswith(_COMPRESSED_BODY_PREFIX):
+        return body
+    compressed = zlib.compress(body, level=6)
+    encoded = _COMPRESSED_BODY_PREFIX + compressed
+    return encoded if len(encoded) < len(body) else body
+
+
+def _decode_document_body(body: bytes) -> bytes:
+    if body.startswith(_COMPRESSED_BODY_PREFIX):
+        return zlib.decompress(body[len(_COMPRESSED_BODY_PREFIX):])
+    return body
 
 
 filings = Table(
@@ -882,7 +901,7 @@ class DisclosureStore:
             ).first()
         if row is None:
             return None
-        return bytes(row.body), row.content_type or "", row.sha256
+        return _decode_document_body(bytes(row.body)), row.content_type or "", row.sha256
 
     def set_document_status(
         self,
@@ -940,11 +959,56 @@ class DisclosureStore:
             url=url,
             retrieved_at=_utcnow(),
             content_type=content_type,
-            body=body,
+            body=_encode_document_body(body),
         )
         with self.database.transaction() as connection:
             connection.execute(statement.on_conflict_do_nothing(index_elements=[raw_documents.c.sha256]))
         return digest
+
+    def compress_documents(self, batch_size: int = 100) -> Dict[str, int]:
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        scanned = compressed = bytes_saved = 0
+        last_sha = ""
+        while True:
+            with self.database.engine.connect() as connection:
+                rows = connection.execute(
+                    select(raw_documents.c.sha256, raw_documents.c.body)
+                    .where(raw_documents.c.sha256 > last_sha)
+                    .order_by(raw_documents.c.sha256)
+                    .limit(batch_size)
+                ).all()
+            if not rows:
+                break
+            updates = []
+            for sha256, stored_body in rows:
+                body = bytes(stored_body)
+                encoded = _encode_document_body(body)
+                scanned += 1
+                if encoded != body:
+                    updates.append({
+                        "document_sha256": sha256,
+                        "encoded_body": encoded,
+                    })
+                    compressed += 1
+                    bytes_saved += len(body) - len(encoded)
+            if updates:
+                with self.database.transaction() as connection:
+                    connection.execute(
+                        raw_documents.update()
+                        .where(
+                            raw_documents.c.sha256
+                            == bindparam("document_sha256")
+                        )
+                        .values(body=bindparam("encoded_body")),
+                        updates,
+                    )
+            last_sha = rows[-1].sha256
+        return {
+            "scanned": scanned,
+            "compressed": compressed,
+            "bytes_saved": bytes_saved,
+        }
 
     def error(
         self, exchange: str, dataset: str, record: Mapping[str, object],

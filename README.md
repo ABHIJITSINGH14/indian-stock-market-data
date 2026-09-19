@@ -66,7 +66,8 @@ BSE data product, and this project does not substitute unofficial sources.
 - `ingestion_runs`, `ingestion_checkpoints`, `ingestion_errors`: truthful run
   status, incremental progress, and source failures.
 - `filings`, `raw_documents`: revision-aware filing indexes and content-hashed
-  official XML/XBRL/attachment archives.
+  official XML/XBRL/attachment archives. Compressible document bodies use
+  transparent zlib storage while hashes continue to identify the original bytes.
 - `shareholding_patterns`: promoter, FII/FPI, DII, public, and residual
   non-institutional public ownership by symbol and quarter.
 - `financial_facts`, `financial_metrics`: taxonomy-independent raw XBRL facts
@@ -84,6 +85,13 @@ BSE data product, and this project does not substitute unofficial sources.
 Legacy ancillary scripts continue to produce ignored CSV files under
 `data/raw/`. SQLite is the durable source of truth for equity masters and daily
 prices. See [INSTALLATION.md](INSTALLATION.md) and [USAGE.md](USAGE.md).
+
+Existing document caches can be converted losslessly in restart-safe batches:
+
+```bash
+python3 scripts/compress_documents.py \
+  --database-url sqlite:///data/databases/stock_market.db
+```
 
 ## Source notes
 
