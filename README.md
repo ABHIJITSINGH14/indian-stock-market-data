@@ -93,6 +93,19 @@ python3 scripts/compress_documents.py \
   --database-url sqlite:///data/databases/stock_market.db
 ```
 
+For unattended macOS operation, install the single-instance LaunchAgent:
+
+```bash
+venv/bin/python scripts/auto_backfill.py install \
+  --database-url sqlite:///data/databases/stock_market.db \
+  --min-free-gib 12
+```
+
+The service continuously resumes NSE/BSE prices and fundamentals, refreshes all
+NSE disclosure datasets, applies source-specific exponential cooldowns, and
+stops child collectors before disk space falls below the configured reserve.
+Progress and retry times persist in `data/databases/auto-backfill-state.json`.
+
 ## Source notes
 
 NSE uses its official equity master CSV and legacy/UDiFF bhavcopy ZIP archives.
