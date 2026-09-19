@@ -43,6 +43,7 @@ data/databases/auto-backfill-state.json
 data/databases/auto-backfill-state.json-*
 data/backups/*.db
 data/backups/*.db-*
+data/backups/*.db.gz
 
 # Logs
 logs/
