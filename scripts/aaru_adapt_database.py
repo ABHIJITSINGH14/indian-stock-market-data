@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a consistent AARU staging database from the official-source SQLite lake."""
+"""Create a safe AARU metadata or full-copy candidate from stock_market.db."""
 
 from __future__ import annotations
 
@@ -30,9 +30,7 @@ def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
 
 def consistent_backup(source: Path, destination: Path) -> None:
     source_connection = sqlite3.connect(
-        "file:{}?mode=ro".format(source),
-        uri=True,
-        timeout=60,
+        "file:{}?mode=ro".format(source), uri=True, timeout=60
     )
     source_connection.execute("PRAGMA query_only=ON")
     source_connection.execute("PRAGMA busy_timeout=60000")
@@ -56,65 +54,93 @@ def ensure_integrity(connection: sqlite3.Connection) -> None:
         )
 
 
-def dataset_mappings() -> Sequence[Sequence[str]]:
-    return (
-        (
-            "instrumentMaster",
-            "securities+exchange_symbols",
-            "instrumentMaster",
-            "official_exchange",
-            "Canonical identity still requires listing-lifecycle and instrument-class audit.",
-        ),
-        (
-            "cashEOD",
-            "daily_prices",
-            "cashEOD",
-            "official_exchange",
-            "Official unadjusted cash-market observations.",
-        ),
-        (
-            "exchangeFilings",
-            "filings+raw_documents",
-            "exchangeFilings",
-            "official_exchange",
-            "Revision-aware filing index and content-addressed document custody.",
-        ),
-        (
-            "financialStatements",
-            "financial_fact_instances",
-            "financialStatements",
-            "official_exchange",
-            "Lossless XBRL fact instances; no aggregator override.",
-        ),
-        (
-            "financialMetrics",
-            "financial_metrics",
-            "derived",
-            "deterministic",
-            "Reported and derived metrics remain explicitly distinguished.",
-        ),
-        (
-            "shareholding",
-            "shareholding_patterns",
-            "shareholding",
-            "official_exchange",
-            "Point-in-time availability must be validated before research admission.",
-        ),
-        (
-            "corporateActions",
-            "corporate_actions",
-            "corporateActions",
-            "official_exchange",
-            "Requires completeness and effective-date reconciliation.",
-        ),
-        (
-            "insiderDisclosures",
-            "pit_disclosures",
-            "insiderDisclosures",
-            "official_exchange",
-            "PIT means prevention-of-insider-trading disclosure, not point-in-time certification.",
-        ),
-    )
+def preflight_full_copy(source: Path, destination: Path, reserve_gib: float) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(destination.parent).free
+    reserve = int(reserve_gib * 1024 ** 3)
+    required = int(source.stat().st_size * 1.15) + reserve
+    if free < required:
+        raise RuntimeError(
+            "Insufficient free space for full copy: free={:.2f} GiB, "
+            "required={:.2f} GiB. Use --mode metadata or free space.".format(
+                free / 1024 ** 3, required / 1024 ** 3
+            )
+        )
+
+
+def existing_tables(connection: sqlite3.Connection) -> set[str]:
+    return {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+
+
+def create_conditional_views(connection: sqlite3.Connection) -> None:
+    tables = existing_tables(connection)
+    views = []
+    if {"securities", "exchange_symbols"}.issubset(tables):
+        views.append(
+            """
+            CREATE VIEW IF NOT EXISTS aaru_instruments AS
+            SELECT s.id AS security_id,s.canonical_id,s.isin,s.name,s.active,
+                   es.exchange,es.exchange_symbol,es.series,es.scrip_code,
+                   es.active AS listing_active,es.source
+            FROM securities s JOIN exchange_symbols es ON es.security_id=s.id
+            """
+        )
+    if "daily_prices" in tables:
+        views.append(
+            """
+            CREATE VIEW IF NOT EXISTS aaru_cash_eod AS
+            SELECT security_id,exchange,trading_date AS event_time,series,
+                   open,high,low,close,last,previous_close,volume,turnover,
+                   trades,deliverable_quantity,source,
+                   created_at AS retrieved_at,updated_at
+            FROM daily_prices
+            """
+        )
+    if "filings" in tables:
+        views.append(
+            """
+            CREATE VIEW IF NOT EXISTS aaru_filing_index AS
+            SELECT id AS filing_id,security_id,symbol,exchange,dataset,
+                   external_id,filing_date AS knowledge_time,
+                   period_start AS event_period_start,
+                   period_end AS event_period_end,document_url,
+                   document_sha256,is_revision,created_at AS retrieved_at
+            FROM filings
+            """
+        )
+    if "financial_fact_instances" in tables:
+        views.append(
+            """
+            CREATE VIEW IF NOT EXISTS aaru_financial_facts AS
+            SELECT * FROM financial_fact_instances
+            """
+        )
+    if "financial_metrics" in tables:
+        views.append(
+            """
+            CREATE VIEW IF NOT EXISTS aaru_financial_metrics AS
+            SELECT filing_id,symbol,filing_date AS knowledge_time,
+                   period_end AS event_time,metric,value,source,scope,derivation
+            FROM financial_metrics
+            """
+        )
+    if "shareholding_patterns" in tables:
+        views.append(
+            """
+            CREATE VIEW IF NOT EXISTS aaru_ownership AS
+            SELECT filing_id,security_id,symbol,quarter_end AS event_time,
+                   promoter_percent,fii_percent,dii_percent,public_percent,
+                   non_institution_public_percent
+            FROM shareholding_patterns
+            """
+        )
+    for statement in views:
+        connection.execute(statement)
 
 
 def import_inventory(
@@ -129,9 +155,9 @@ def import_inventory(
         exchange, _row_count, trading_dates, start, end, _securities = row
         connection.execute(
             "INSERT OR REPLACE INTO aaru_coverage_cells "
-            "(snapshot_id, source, dataset, universe, period_start, period_end, "
-            "expected_count, present_count, missing_count, status, reason, observed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(snapshot_id,source,dataset,universe,period_start,period_end,"
+            "expected_count,present_count,missing_count,status,reason,observed_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 snapshot_id,
                 exchange,
@@ -143,50 +169,54 @@ def import_inventory(
                 trading_dates,
                 None,
                 "partial",
-                "Present trading dates are known; expected exchange-session reconciliation remains pending.",
+                "Present coverage known via {}; expected exchange sessions still "
+                "require reconciliation.".format(
+                    inventory.get("price_coverage_method", "unknown")
+                ),
                 observed_at,
             ),
         )
-
     screener = inventory.get("screener", {})
     statuses = screener.get("statuses", {}) if isinstance(screener, Mapping) else {}
-    for status, count in statuses.items():
+    for source_status, count in statuses.items():
         mapped = {
             "pages_collected": "complete",
             "partial": "partial",
             "pending": "retryable",
             "unresolved": "unknown",
             "routed_to_fund_dataset": "not_applicable",
-        }.get(status, "unknown")
+        }.get(source_status, "unknown")
         connection.execute(
             "INSERT OR REPLACE INTO aaru_coverage_cells "
-            "(snapshot_id, source, dataset, universe, period_start, period_end, "
-            "expected_count, present_count, missing_count, status, reason, observed_at) "
-            "VALUES (?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?)",
+            "(snapshot_id,source,dataset,universe,period_start,period_end,"
+            "expected_count,present_count,missing_count,status,reason,observed_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 snapshot_id,
                 "SCREENER",
-                "fundamentals:{}".format(status),
+                "fundamentals:{}".format(source_status),
                 "expanded_universe",
+                "",
+                "",
                 count,
                 count if mapped == "complete" else 0,
                 count if mapped in {"retryable", "partial", "unknown"} else 0,
                 mapped,
-                "Imported from Screener resume-v3 hard inventory.",
+                "Imported from Screener hard inventory.",
                 observed_at,
             ),
         )
 
 
-def import_missing_manifest(
-    connection: sqlite3.Connection,
-    manifest: Mapping[str, Any],
+def import_manifest(
+    connection: sqlite3.Connection, manifest: Mapping[str, Any]
 ) -> None:
     for value in manifest.get("items", []):
         connection.execute(
             "INSERT OR REPLACE INTO aaru_missing_manifest "
-            "(source, dataset, identity, period_start, period_end, status, "
-            "attempts, next_action, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(source,dataset,identity,period_start,period_end,status,attempts,"
+            "next_action,reason,locator,affected_count) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (
                 value.get("source", ""),
                 value.get("dataset", ""),
@@ -197,6 +227,8 @@ def import_missing_manifest(
                 int(value.get("attempts", 0) or 0),
                 value.get("next_action"),
                 value.get("reason"),
+                value.get("locator"),
+                int(value.get("affected_count", 1) or 1),
             ),
         )
 
@@ -206,11 +238,12 @@ def adapt_database(
     destination: Path,
     schema_path: Path,
     *,
+    mode: str = "metadata",
     inventory_path: Optional[Path] = None,
     missing_manifest_path: Optional[Path] = None,
     source_branch: str = "abhijitsingh14-run-stock-market-app",
     source_commit_sha: str = "",
-    retain_source_snapshot: Optional[Path] = None,
+    reserve_gib: float = 12.0,
 ) -> Dict[str, Any]:
     source = source.expanduser().resolve()
     destination = destination.expanduser().resolve()
@@ -220,60 +253,64 @@ def adapt_database(
         raise FileExistsError(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    consistent_backup(source, destination)
-    pre_adaptation_hash = sha256_file(destination)
-    if retain_source_snapshot:
-        retained = retain_source_snapshot.expanduser().resolve()
-        if retained.exists():
-            destination.unlink(missing_ok=True)
-            raise FileExistsError(retained)
-        retained.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(destination, retained)
-        if sha256_file(retained) != pre_adaptation_hash:
-            destination.unlink(missing_ok=True)
-            retained.unlink(missing_ok=True)
-            raise RuntimeError("Retained source snapshot hash mismatch")
+    if mode == "full":
+        preflight_full_copy(source, destination, reserve_gib)
+        consistent_backup(source, destination)
+        snapshot_hash = sha256_file(destination)
+        snapshot_size = destination.stat().st_size
+    elif mode == "metadata":
+        sqlite3.connect(destination).close()
+        inventory_hash = None
+        if inventory_path:
+            inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+            inventory_hash = inventory.get("database", {}).get("sha256")
+        snapshot_hash = inventory_hash or "unsealed-live-source"
+        snapshot_size = 0
+    else:
+        raise ValueError("Unsupported mode: {}".format(mode))
 
     connection = sqlite3.connect(destination)
     try:
         connection.execute("PRAGMA foreign_keys=ON")
-        ensure_integrity(connection)
+        if mode == "full":
+            ensure_integrity(connection)
         connection.executescript(schema_path.read_text(encoding="utf-8"))
-        snapshot_id = "stock-market-{}".format(pre_adaptation_hash[:24])
+        snapshot_id = "stock-market-{}".format(
+            snapshot_hash[:24] if snapshot_hash != "unsealed-live-source"
+            else "unsealed"
+        )
         connection.execute(
             "INSERT INTO aaru_source_snapshots "
-            "(snapshot_id, source_path, snapshot_sha256, source_branch, "
-            "source_commit_sha, created_at, source_size_bytes, "
-            "snapshot_size_bytes, integrity_status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(snapshot_id,source_path,snapshot_sha256,source_branch,"
+            "source_commit_sha,created_at,source_size_bytes,"
+            "snapshot_size_bytes,integrity_status,copy_mode) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
                 snapshot_id,
                 str(source),
-                pre_adaptation_hash,
+                snapshot_hash,
                 source_branch,
                 source_commit_sha,
                 utcnow(),
                 source.stat().st_size,
-                destination.stat().st_size,
-                "ok",
+                snapshot_size,
+                "ok" if mode == "full" else "not_run",
+                mode,
             ),
-        )
-        connection.executemany(
-            "INSERT OR REPLACE INTO aaru_dataset_registry "
-            "(dataset, source_table, aaru_kind, authority, notes) "
-            "VALUES (?, ?, ?, ?, ?)",
-            dataset_mappings(),
         )
         if inventory_path:
             inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
             import_inventory(connection, snapshot_id, inventory)
         if missing_manifest_path:
-            manifest = json.loads(
-                missing_manifest_path.read_text(encoding="utf-8")
+            import_manifest(
+                connection,
+                json.loads(missing_manifest_path.read_text(encoding="utf-8")),
             )
-            import_missing_manifest(connection, manifest)
+        if mode == "full":
+            create_conditional_views(connection)
         connection.commit()
-        ensure_integrity(connection)
+        if mode == "full":
+            ensure_integrity(connection)
     except BaseException:
         connection.close()
         destination.unlink(missing_ok=True)
@@ -282,20 +319,18 @@ def adapt_database(
         connection.close()
 
     result = {
-        "schema": "aaru.market-adaptation-receipt.v2",
+        "schema": "aaru.market-adaptation-receipt.v3",
         "created_at": utcnow(),
+        "mode": mode,
         "source": str(source),
         "destination": str(destination),
-        "source_snapshot_sha256": pre_adaptation_hash,
+        "source_snapshot_sha256": snapshot_hash,
         "candidate_sha256": sha256_file(destination),
         "source_bytes": source.stat().st_size,
         "candidate_bytes": destination.stat().st_size,
         "source_branch": source_branch,
         "source_commit_sha": source_commit_sha,
-        "retained_source_snapshot": (
-            str(retain_source_snapshot) if retain_source_snapshot else None
-        ),
-        "integrity": "ok",
+        "integrity": "ok" if mode == "full" else "not_run",
     }
     receipt = destination.with_suffix(destination.suffix + ".aaru-receipt.json")
     receipt.write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -307,15 +342,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--destination", required=True, type=Path)
+    parser.add_argument("--mode", choices=("metadata", "full"), default="metadata")
     parser.add_argument("--schema", type=Path)
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--missing-manifest", type=Path)
     parser.add_argument(
-        "--source-branch",
-        default="abhijitsingh14-run-stock-market-app",
+        "--source-branch", default="abhijitsingh14-run-stock-market-app"
     )
     parser.add_argument("--source-commit-sha", default="")
-    parser.add_argument("--retain-source-snapshot", type=Path)
+    parser.add_argument("--reserve-gib", type=float, default=12.0)
     return parser.parse_args(argv)
 
 
@@ -330,11 +365,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.source,
         args.destination,
         schema,
+        mode=args.mode,
         inventory_path=args.inventory,
         missing_manifest_path=args.missing_manifest,
         source_branch=args.source_branch,
         source_commit_sha=args.source_commit_sha,
-        retain_source_snapshot=args.retain_source_snapshot,
+        reserve_gib=args.reserve_gib,
     )
     print(json.dumps(result, indent=2))
     return 0
