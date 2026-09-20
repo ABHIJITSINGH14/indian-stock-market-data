@@ -52,25 +52,77 @@ python scripts/aaru_plan_downloads.py \
   --output data/inventory/live/download_plan.json
 ```
 
-The generated `.sh` file is sequential by design. All SQLite writers share the
-same logical mutex and must not run alongside `auto_backfill.py` or another
-writer.
+The planner now:
 
-## 5. Execute only after checking the plan
+- bounds price retries to the exact failed-date span;
+- merges NSE financial-results and shareholding windows into one bulk job;
+- limits BSE financial repair to resolved scrip codes where possible;
+- marks unresolved BSE-wide repairs as broad-scope jobs;
+- refuses to treat BSE shareholding as supported when no certified collector
+  exists;
+- leaves unsupported families for review rather than inventing a command.
 
-Before running database-writer jobs:
+The generated `.sh` is a review artifact. Prefer the guarded Python executor
+below for real execution.
 
-1. stop/checkpoint the unattended auto-backfill service;
+## 5. Execute the reviewed plan safely
+
+Before database-writer jobs:
+
+1. stop/checkpoint the unattended `auto_backfill.py` service;
 2. confirm free space remains above the plan reserve;
-3. review unsupported dataset families;
-4. execute the generated shell plan sequentially.
+3. review unsupported and broad-scope jobs;
+4. run a dry execution check;
+5. execute sequentially with durable state and per-job logs.
+
+When installed as the repository LaunchAgent, stop it with:
+
+```bash
+launchctl bootout \
+  "gui/$(id -u)" \
+  "$HOME/Library/LaunchAgents/com.indian-stock-market-data.backfill.plist"
+```
+
+A manually started process should be stopped with Ctrl-C so its active window is
+checkpointed as interrupted.
+
+Dry run:
+
+```bash
+python scripts/aaru_execute_plan.py \
+  --plan data/inventory/live/download_plan.json \
+  --repo-root "$PWD" \
+  --auto-backfill-lock data/databases/auto-backfill-state.json-auto.lock \
+  --dry-run
+```
+
+Execute:
+
+```bash
+python scripts/aaru_execute_plan.py \
+  --plan data/inventory/live/download_plan.json \
+  --repo-root "$PWD" \
+  --auto-backfill-lock data/databases/auto-backfill-state.json-auto.lock
+```
+
+The executor:
+
+- refuses database-writer jobs while the auto-backfill lock is held;
+- serializes all SQLite writers through a second exclusive lock;
+- checks the storage reserve before each job;
+- records start/end/return code/free space in
+  `download_execution_state.json`;
+- writes per-job output to `download_logs/`;
+- skips already completed jobs on restart;
+- refuses broad-scope jobs unless `--approve-broad-scope` is supplied;
+- stops on the first failed job unless `--continue-on-error` is supplied.
 
 Never parallelize NSE/BSE SQLite writers merely to increase apparent speed.
-Parallelize source downloads only when writes remain serialized.
+Parallelize source retrieval only when database writes remain serialized.
 
 ## 6. Repeat until no retryable items remain
 
-Re-run steps 2–4 after each targeted pass. Completion means:
+Re-run steps 2–5 after each targeted pass. Completion means:
 
 - no `retryable` items remain;
 - all remaining gaps are explicit terminal or review states;
