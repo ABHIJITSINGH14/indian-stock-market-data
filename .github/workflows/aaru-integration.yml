@@ -10,6 +10,7 @@ on:
       - "docs/aaru_*.md"
       - "tests/test_aaru_inventory_v3.py"
       - "tests/test_aaru_plan_downloads.py"
+      - "tests/test_aaru_execute_plan.py"
       - ".github/workflows/aaru-integration.yml"
   workflow_dispatch:
 
@@ -34,3 +35,4 @@ jobs:
           python -m pytest -q
           tests/test_aaru_inventory_v3.py
           tests/test_aaru_plan_downloads.py
+          tests/test_aaru_execute_plan.py
