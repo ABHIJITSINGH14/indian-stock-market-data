@@ -1,0 +1,29 @@
+{
+  "version": "aaru.market-dataset-contracts.v1",
+  "terminal_statuses": [
+    "complete",
+    "partial",
+    "source_unavailable",
+    "not_published",
+    "not_applicable",
+    "retryable",
+    "blocked",
+    "unknown"
+  ],
+  "datasets": {
+    "instrument_master": {"required": true, "sources": ["NSE", "BSE"]},
+    "cash_eod": {"required": true, "sources": ["NSE", "BSE"]},
+    "financial_results": {"required": true, "sources": ["NSE", "BSE", "SCREENER"]},
+    "shareholding": {"required": true, "sources": ["NSE", "BSE", "SCREENER"]},
+    "corporate_actions": {"required": true, "sources": ["NSE", "BSE"]},
+    "exchange_filings": {"required": true, "sources": ["NSE", "BSE"]},
+    "bulk_block_deals": {"required": true, "sources": ["NSE", "BSE"]},
+    "insider_disclosures": {"required": true, "sources": ["NSE", "BSE"]},
+    "sast_disclosures": {"required": true, "sources": ["NSE", "BSE"]},
+    "screener_pages": {"required": true, "sources": ["SCREENER"]},
+    "historical_universe": {"required": true, "sources": ["NSE", "BSE"]},
+    "listing_lifecycle": {"required": true, "sources": ["NSE", "BSE"]},
+    "sme_membership": {"required": true, "sources": ["NSE", "BSE"]},
+    "fund_nav": {"required": false, "sources": ["AMFI", "AMC", "NSE", "BSE"]}
+  }
+}
