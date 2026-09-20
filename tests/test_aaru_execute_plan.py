@@ -138,3 +138,30 @@ def test_writer_runs_when_auto_lock_is_free(tmp_path: Path) -> None:
     )
     assert summary["completed"] == 1
     assert (repo / "written").read_text() == "ok"
+
+
+def test_dry_run_allows_broad_writer_without_locks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    plan = {
+        "reserve_gib": 0,
+        "jobs": [
+            {
+                "id": "broad-writer",
+                "command": ["python3", "-c", "raise SystemExit(99)"],
+                "writes_database": True,
+                "broad_scope": True,
+            }
+        ],
+    }
+    summary = execute_plan(
+        plan,
+        repo_root=repo,
+        state_path=tmp_path / "state.json",
+        log_dir=tmp_path / "logs",
+        executor_lock=tmp_path / "executor.lock",
+        auto_backfill_lock=None,
+        writer_lock=tmp_path / "writer.lock",
+        dry_run=True,
+    )
+    assert summary["completed"] == 1
