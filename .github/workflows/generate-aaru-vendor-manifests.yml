@@ -1,0 +1,49 @@
+name: Generate AARU vendor manifests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - aaru-hard-inventory-integration
+    paths:
+      - scripts/generate_aaru_vendor_manifests.py
+      - .github/workflows/generate-aaru-vendor-manifests.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: generate-aaru-vendor-manifests
+  cancel-in-progress: true
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: aaru-hard-inventory-integration
+          fetch-depth: 0
+      - name: Generate chunked Git tree payloads
+        run: python scripts/generate_aaru_vendor_manifests.py
+      - name: Seal source commit and commit manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          python3 - "$SOURCE_COMMIT" <<'PY'
+          import json, pathlib, sys
+          path=pathlib.Path('vendor_manifests/index.json')
+          value=json.loads(path.read_text())
+          value['source_commit']=sys.argv[1]
+          path.write_text(json.dumps(value, indent=2)+'\n')
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add vendor_manifests
+          if git diff --cached --quiet; then
+            echo "Vendor manifests already current."
+            exit 0
+          fi
+          git commit -m "Generate AARU vendor manifests [skip ci]"
+          git push origin HEAD:aaru-hard-inventory-integration
