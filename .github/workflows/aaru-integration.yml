@@ -6,6 +6,7 @@ on:
       - "scripts/aaru_*.py"
       - "schema/aaru_market_staging.sql"
       - "config/aaru_dataset_contracts.json"
+      - "docs/aaru_*.md"
       - "tests/test_aaru_inventory_v3.py"
       - "tests/test_aaru_plan_downloads.py"
       - ".github/workflows/aaru-integration.yml"
