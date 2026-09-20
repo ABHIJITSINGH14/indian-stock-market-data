@@ -230,13 +230,23 @@ def execute_plan(
                 print("skip complete job: {}".format(job_id))
                 summary["skipped"] += 1
                 continue
-            if job.get("broad_scope") and not approve_broad_scope:
+            if (
+                job.get("broad_scope")
+                and not dry_run
+                and not approve_broad_scope
+            ):
                 raise RuntimeError(
                     "Refusing broad-scope job without --approve-broad-scope: {}"
                     .format(job_id)
                 )
 
-            if job.get("writes_database"):
+            if dry_run:
+                @contextmanager
+                def dry_run_guard() -> Iterator[None]:
+                    yield
+
+                guard = dry_run_guard()
+            elif job.get("writes_database"):
                 @contextmanager
                 def writer_guards() -> Iterator[None]:
                     if auto_backfill_lock is None:
