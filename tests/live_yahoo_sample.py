@@ -25,6 +25,9 @@ def produce(directory):
     from scripts.download_nse_data import NSEDataDownloader
     from scripts.download_fundamentals import FundamentalsDownloader
     import yfinance as yf
+    # Surface provider exceptions instead of allowing the library to hide them.
+    # No verbose authentication logging and no automatic retries are enabled.
+    yf.config.debug.hide_exceptions = False
     directory.mkdir(parents=True, exist_ok=False)
     price = NSEDataDownloader(SYMBOLS, START, END, directory / FILES[0])
     fundamental = FundamentalsDownloader(SYMBOLS, directory / FILES[1])
@@ -47,7 +50,8 @@ def produce(directory):
     except Exception as exc:
         diagnostic = {**identity(), 'status': 'failure', 'scope': SCOPE,
                       'exception_type': type(exc).__name__, 'message': str(exc)[:500],
-                      'price_coverage': price.coverage, 'fundamentals_coverage': fundamental.coverage}
+                      'price_coverage': price.coverage, 'fundamentals_coverage': fundamental.coverage,
+                      'fundamentals_response_metadata': fundamental.last_response_metadata}
         (directory / 'failure-diagnostics.json').write_text(json.dumps(diagnostic, indent=2))
         raise
 

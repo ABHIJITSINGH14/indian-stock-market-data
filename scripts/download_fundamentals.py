@@ -26,6 +26,7 @@ class FundamentalsDownloader:
             raise ValueError('Provide distinct, explicit NSE Yahoo ticker identities')
         self.output_path = Path(FUNDAMENTALS_CSV_PATH if output_path is None else output_path)
         self.coverage = {}
+        self.last_response_metadata = {}
         self.processor = DataProcessor()
         self.data = pd.DataFrame()
     
@@ -45,6 +46,17 @@ class FundamentalsDownloader:
             ticker = yf.Ticker(symbol)
             
             info = ticker.info
+            # Record shape/types only: partial quote dictionaries must not masquerade as fundamentals.
+            self.last_response_metadata = {
+                'requested_symbol': symbol,
+                'payload_type': type(info).__name__,
+                'field_count': len(info) if isinstance(info, dict) else None,
+                'fields': sorted(info) if isinstance(info, dict) else [],
+                'market_cap_type': type(info.get('marketCap')).__name__ if isinstance(info, dict) else None,
+                'market_cap_present': 'marketCap' in info if isinstance(info, dict) else False,
+                'currency': info.get('currency') if isinstance(info, dict) else None,
+                'symbol_matches': info.get('symbol') == symbol if isinstance(info, dict) else False,
+            }
             if not isinstance(info, dict) or info.get('symbol') != symbol:
                 raise ValueError('Missing or mismatched issuer identity')
             cap = info.get('marketCap')
@@ -100,6 +112,7 @@ class FundamentalsDownloader:
         Download fundamentals for all stocks
         """
         self.data = pd.DataFrame()
+        self.last_response_metadata = {}
         self.coverage = {'requested': list(self.symbols), 'returned': [],
                          'not_returned': list(self.symbols), 'historical_completeness': 'not_verified'}
         all_fundamentals = []

@@ -1,4 +1,5 @@
 name: Live Yahoo adapter sample
+# Preserve provider response diagnostics when core fields fail validation.
 
 on:
   push:
