@@ -39,15 +39,33 @@ jobs:
       timeout-minutes: 15
       run: python -m scripts.run_all
     
-    - name: Upload data artifacts
+    - name: Upload complete-task data artifacts
       uses: actions/upload-artifact@v4
-      if: always()
+      if: success()
       with:
         name: downloaded-data
-        path: data/raw/
+        path: data/raw/*.csv
         if-no-files-found: error
         retention-days: 30
     
+    - name: Preserve partial task outputs under a distinct name
+      if: ${{ failure() && hashFiles('data/raw/*.csv') != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: partial-download-data-${{ github.run_id }}-${{ github.run_attempt }}
+        path: data/raw/*.csv
+        if-no-files-found: error
+        retention-days: 7
+
+    - name: Preserve exact price rejection evidence separately
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: price-rejection-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+        path: data/raw/price-rejections/
+        if-no-files-found: ignore
+        retention-days: 7
+
     - name: Upload logs
       uses: actions/upload-artifact@v4
       if: always()
