@@ -1,12 +1,20 @@
 name: Live Yahoo adapter sample
-# Preserve provider response diagnostics when core fields fail validation.
+# Real adapter validation; missing provider fields remain a hard failure.
 
 on:
   push:
     branches: [fix/live-source-restoration]
     paths:
       - .github/workflows/source-verification.yml
+      - scripts/download_nse_data.py
+      - scripts/download_fundamentals.py
+      - tests/live_yahoo_sample.py
+      - requirements.txt
   workflow_dispatch:
+
+concurrency:
+  group: yahoo-live-adapter-validation
+  cancel-in-progress: false
 
 permissions:
   contents: read
