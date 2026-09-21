@@ -6,7 +6,9 @@ import re
 import time
 from pathlib import Path
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from config.config import FUNDAMENTALS_CSV_PATH
+from config.issuer_identity import reject_known_typo, current_snapshot_deferral
 from utils.logger import setup_logger
 from utils.data_processor import DataProcessor
 
@@ -24,6 +26,8 @@ class FundamentalsDownloader:
             for s in self.symbols
         ):
             raise ValueError('Provide distinct, explicit NSE Yahoo ticker identities')
+        for symbol in self.symbols:
+            reject_known_typo(symbol)
         self.output_path = Path(FUNDAMENTALS_CSV_PATH if output_path is None else output_path)
         self.coverage = {}
         self.last_response_metadata = {}
@@ -32,7 +36,7 @@ class FundamentalsDownloader:
     
     # Major stocks for fundamental analysis
     STOCKS = [
-        'RELIANCE.NS', 'TCS.NS', 'INFOSY.NS', 'WIPRO.NS', 'HDFC.NS',
+        'RELIANCE.NS', 'TCS.NS', 'INFY.NS', 'WIPRO.NS', 'HDFC.NS',
         'ICICIBANK.NS', 'SBIN.NS', 'MARUTI.NS', 'BAJAJFINSV.NS', 'TITAN.NS',
         'LT.NS', 'NESTLEIND.NS', 'ASIANPAINT.NS', 'SUNPHARMA.NS', 'DRREDDY.NS'
     ]
@@ -41,6 +45,13 @@ class FundamentalsDownloader:
         """
         Fetch fundamental information for a stock
         """
+        self.last_response_metadata = {}
+        reject_known_typo(symbol)
+        deferral = current_snapshot_deferral(symbol, datetime.now(ZoneInfo('Asia/Kolkata')).date())
+        if deferral is not None:
+            self.last_response_metadata = {'requested_symbol': symbol, **deferral}
+            logger.warning('No current standalone snapshot for %s; archival financials remain required', symbol)
+            return None
         try:
             logger.info(f"Fetching fundamentals for {symbol}...")
             ticker = yf.Ticker(symbol)
@@ -113,13 +124,22 @@ class FundamentalsDownloader:
         """
         self.data = pd.DataFrame()
         self.last_response_metadata = {}
+        as_of = datetime.now(ZoneInfo('Asia/Kolkata')).date()
+        deferred = {symbol: reason for symbol in self.symbols
+                    if (reason := current_snapshot_deferral(symbol, as_of)) is not None}
         self.coverage = {'requested': list(self.symbols), 'returned': [],
-                         'not_returned': list(self.symbols), 'historical_completeness': 'not_verified'}
+                         'not_returned': list(self.symbols), 'historical_completeness': 'not_verified',
+                         'snapshot_as_of_date_ist': as_of.isoformat(), 'deferred': deferred}
         all_fundamentals = []
         try:
-            for index, symbol in enumerate(self.symbols):
-                if index:
+            attempted = 0
+            for symbol in self.symbols:
+                if symbol in deferred:
+                    logger.warning('Deferred %s: archival financials required; no successor substitution', symbol)
+                    continue
+                if attempted:
                     time.sleep(2)
+                attempted += 1
                 fundamentals = self.fetch_stock_info(symbol)
                 if fundamentals is None:
                     logger.error('Stopping after unverified fundamentals; remaining issuers stay unverified')
@@ -127,7 +147,8 @@ class FundamentalsDownloader:
                 all_fundamentals.append(fundamentals)
                 self.coverage['returned'].append(symbol)
                 self.coverage['not_returned'].remove(symbol)
-            return bool(all_fundamentals)
+            # Deferred requests remain unreturned. Do not redefine full-scope success.
+            return bool(all_fundamentals) and not self.coverage['not_returned']
         finally:
             if all_fundamentals:
                 self.data = pd.DataFrame(all_fundamentals)
