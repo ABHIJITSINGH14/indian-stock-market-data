@@ -1,11 +1,20 @@
 name: Download Stock Market Data
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/download-data.yml
+      - .github/workflows/analyze-data.yml
+      - requirements.txt
   schedule:
     # Run at 5 AM IST (11:30 PM UTC previous day) every weekday
     - cron: '30 23 * * 1-5'
   
   workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: read
 
 jobs:
   download-data:
@@ -26,30 +35,21 @@ jobs:
         pip install -r requirements.txt
     
     - name: Run data downloads
-      run: python scripts/run_all.py
+      run: python -m scripts.run_all
     
     - name: Upload data artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: downloaded-data
         path: data/raw/
+        if-no-files-found: error
         retention-days: 30
     
     - name: Upload logs
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: download-logs
         path: logs/
         retention-days: 7
-    
-    - name: Commit data changes
-      if: success()
-      run: |
-        git config --global user.email "action@github.com"
-        git config --global user.name "GitHub Action"
-        git add data/raw/*.csv
-        git commit -m "Update stock market data - $(date +'%Y-%m-%d %H:%M:%S')" || true
-        git push
-      continue-on-error: true
