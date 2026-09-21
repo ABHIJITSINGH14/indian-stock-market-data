@@ -11,7 +11,7 @@ on:
       - 'requirements.txt'
       - '.github/workflows/**'
   push:
-    branches: [main, fix/collector-failure-contracts]
+    branches: [main, fix/collector-failure-contracts, fix/live-source-restoration]
     paths:
       - 'scripts/**'
       - 'utils/**'
@@ -36,7 +36,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: python -m pip check
       - name: Offline collector contracts
-        run: python -m unittest discover -s tests -p 'test_collector_contracts.py' -v
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Create explicitly synthetic inputs
         run: python tests/artifact_smoke.py produce --directory "$RUNNER_TEMP/synthetic-inputs"
       - uses: actions/upload-artifact@v4
