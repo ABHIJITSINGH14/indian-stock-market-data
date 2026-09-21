@@ -3,14 +3,25 @@ name: Live Yahoo adapter sample
 
 on:
   push:
-    branches: [fix/live-source-restoration]
+    branches: [fix/issuer-identity]
     paths:
       - .github/workflows/source-verification.yml
       - scripts/download_nse_data.py
       - scripts/download_fundamentals.py
+      - config/issuer_identity.py
       - tests/live_yahoo_sample.py
       - requirements.txt
   workflow_dispatch:
+    inputs:
+      symbol:
+        description: Bounded live sample identity (not the whole requested universe)
+        type: choice
+        options: [RELIANCE.NS, INFY.NS]
+        default: RELIANCE.NS
+        required: true
+
+env:
+  SAMPLE_SYMBOL: ${{ inputs.symbol || 'INFY.NS' }}
 
 concurrency:
   group: yahoo-live-adapter-validation
@@ -36,7 +47,7 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Real adapters, one explicit issuer and five price sessions
         timeout-minutes: 2
-        run: python tests/live_yahoo_sample.py produce --directory "$RUNNER_TEMP/live-yahoo-sample"
+        run: python tests/live_yahoo_sample.py produce --symbol "$SAMPLE_SYMBOL" --directory "$RUNNER_TEMP/live-yahoo-sample"
       - name: Upload scoped live sample only after adapter success
         uses: actions/upload-artifact@v4
         with:
@@ -70,7 +81,7 @@ jobs:
           name: live-yahoo-sample-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/live-yahoo-sample/
       - name: Verify source identity and bytes, then run actual analyzer
-        run: python tests/live_yahoo_sample.py consume --directory "$RUNNER_TEMP/live-yahoo-sample" --report "$RUNNER_TEMP/live-yahoo-report.txt"
+        run: python tests/live_yahoo_sample.py consume --symbol "$SAMPLE_SYMBOL" --directory "$RUNNER_TEMP/live-yahoo-sample" --report "$RUNNER_TEMP/live-yahoo-report.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: live-yahoo-sample-report-${{ github.run_id }}-${{ github.run_attempt }}

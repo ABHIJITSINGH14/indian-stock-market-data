@@ -7,6 +7,9 @@ on:
       - .github/workflows/download-data.yml
       - .github/workflows/analyze-data.yml
       - requirements.txt
+      - scripts/download_nse_data.py
+      - scripts/download_fundamentals.py
+      - config/issuer_identity.py
   schedule:
     # Run at 5 AM IST (11:30 PM UTC previous day) every weekday
     - cron: '30 23 * * 1-5'

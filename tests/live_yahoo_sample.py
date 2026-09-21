@@ -10,7 +10,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-SYMBOLS = ['RELIANCE.NS']
+ALLOWED_SYMBOLS = ('RELIANCE.NS', 'INFY.NS')
 START = '2026-09-14'
 END = '2026-09-19'  # exclusive; these five sessions were observed in the initial probe
 FILES = ('nse_bhavcopy.csv', 'fundamentals.csv')
@@ -21,7 +21,10 @@ def identity():
     return {'run_id': os.environ['GITHUB_RUN_ID'], 'commit_sha': os.environ['GITHUB_SHA']}
 
 
-def produce(directory):
+def produce(directory, symbol='RELIANCE.NS'):
+    if symbol not in ALLOWED_SYMBOLS:
+        raise ValueError('Unsupported bounded-sample identity')
+    symbols = [symbol]
     from scripts.download_nse_data import NSEDataDownloader
     from scripts.download_fundamentals import FundamentalsDownloader
     import yfinance as yf
@@ -29,8 +32,8 @@ def produce(directory):
     # No verbose authentication logging and no automatic retries are enabled.
     yf.config.debug.hide_exceptions = False
     directory.mkdir(parents=True, exist_ok=False)
-    price = NSEDataDownloader(SYMBOLS, START, END, directory / FILES[0])
-    fundamental = FundamentalsDownloader(SYMBOLS, directory / FILES[1])
+    price = NSEDataDownloader(symbols, START, END, directory / FILES[0])
+    fundamental = FundamentalsDownloader(symbols, directory / FILES[1])
     try:
         if not price.run():
             raise ValueError('Live price adapter failed; no successful sample manifest')
@@ -39,7 +42,7 @@ def produce(directory):
             raise ValueError('Live fundamentals adapter failed; no successful sample manifest')
         manifest = {**identity(), 'synthetic': False, 'scope': SCOPE,
                     'provider': 'yahoo_finance', 'provider_version': yf.__version__,
-                    'symbols': SYMBOLS, 'price_start_inclusive': START, 'price_end_exclusive': END,
+                    'symbols': symbols, 'price_start_inclusive': START, 'price_end_exclusive': END,
                     'fundamentals_basis': 'current_snapshot_not_point_in_time_history',
                     'historical_completeness': 'not_verified',
                     'price_rows': len(price.all_data), 'fundamental_rows': len(fundamental.data),
@@ -56,7 +59,10 @@ def produce(directory):
         raise
 
 
-def consume(directory, report):
+def consume(directory, report, symbol='RELIANCE.NS'):
+    if symbol not in ALLOWED_SYMBOLS:
+        raise ValueError('Unsupported bounded-sample identity')
+    symbols = [symbol]
     import pandas as pd
     manifest = json.loads((directory / 'manifest.json').read_text())
     if manifest.get('synthetic') is not False or manifest.get('scope') != SCOPE:
@@ -64,7 +70,7 @@ def consume(directory, report):
     for key, expected in identity().items():
         if manifest.get(key) != expected:
             raise ValueError('Producer identity mismatch: ' + key)
-    if manifest.get('provider') != 'yahoo_finance' or manifest.get('symbols') != SYMBOLS:
+    if manifest.get('provider') != 'yahoo_finance' or manifest.get('symbols') != symbols:
         raise ValueError('Unexpected source or issuer scope')
     if set(manifest.get('sha256', {})) != set(FILES):
         raise ValueError('Unexpected manifest files')
@@ -78,12 +84,16 @@ def consume(directory, report):
         raise ValueError('Unexpected live price sample dates/count')
     if len(fundamentals) != 1 or not (fundamentals['market_cap'] > 0).all():
         raise ValueError('Missing live fundamentals')
+    if set(fundamentals['market_cap_currency']) != {'INR'}:
+        raise ValueError('Unverified fundamentals quote currency')
+    if symbol == 'INFY.NS' and not fundamentals['name'].fillna('').str.contains('Infosys', case=False).all():
+        raise ValueError('Expected Infosys issuer name for the corrected request')
     for frame in (prices, fundamentals):
-        if set(frame['provider_symbol']) != set(SYMBOLS) or set(frame['source']) != {'yahoo_finance'}:
+        if set(frame['provider_symbol']) != set(symbols) or set(frame['source']) != {'yahoo_finance'}:
             raise ValueError('Row provenance mismatch')
     for key in ('price_coverage', 'fundamentals_coverage'):
         coverage = manifest[key]
-        if coverage['requested'] != SYMBOLS or coverage['returned'] != SYMBOLS or coverage['not_returned']:
+        if coverage['requested'] != symbols or coverage['returned'] != symbols or coverage['not_returned']:
             raise ValueError('Incomplete requested sample identities')
     env = dict(os.environ, SAMPLE_DATA_DIR=str(directory.resolve()))
     code = ('import os; from config import config; '
@@ -109,10 +119,11 @@ if __name__ == '__main__':
     parser.add_argument('action', choices=['produce', 'consume'])
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--report', type=Path)
+    parser.add_argument('--symbol', choices=ALLOWED_SYMBOLS, default='RELIANCE.NS')
     args = parser.parse_args()
     if args.action == 'produce':
-        produce(args.directory)
+        produce(args.directory, args.symbol)
     else:
         if args.report is None:
             parser.error('--report required for consume')
-        consume(args.directory, args.report)
+        consume(args.directory, args.report, args.symbol)

@@ -8,6 +8,7 @@ import pandas as pd
 import yfinance as yf
 
 from config.config import START_DATE, END_DATE, BHAVCOPY_CSV_PATH
+from config.issuer_identity import reject_known_typo
 from utils.logger import setup_logger
 from utils.data_processor import DataProcessor
 from utils.price_evidence import audit_price_frame, write_price_evidence
@@ -18,7 +19,7 @@ logger = setup_logger(__name__)
 class NSEDataDownloader:
     # Preserve the requested universe: do not silently replace legacy issuers.
     NSE_STOCKS = [
-        'RELIANCE.NS', 'TCS.NS', 'INFOSY.NS', 'WIPRO.NS', 'HDFC.NS',
+        'RELIANCE.NS', 'TCS.NS', 'INFY.NS', 'WIPRO.NS', 'HDFC.NS',
         'ICICIBANK.NS', 'SBIN.NS', 'MARUTI.NS', 'BAJAJFINSV.NS', 'TITAN.NS',
         'LT.NS', 'NESTLEIND.NS', 'ASIANPAINT.NS', 'SUNPHARMA.NS', 'DRREDDY.NS',
         'CIPLA.NS', 'DMART.NS', 'POWERGRID.NS', 'ULTRACEMCO.NS', 'COALINDIA.NS'
@@ -31,6 +32,8 @@ class NSEDataDownloader:
             for s in self.symbols
         ):
             raise ValueError('Provide distinct, explicit NSE Yahoo ticker identities')
+        for symbol in self.symbols:
+            reject_known_typo(symbol)
         self.start_date = date.fromisoformat(str(START_DATE if start_date is None else start_date))
         self.end_date = date.fromisoformat(str(END_DATE if end_date is None else end_date))
         if self.start_date >= self.end_date:
