@@ -39,24 +39,23 @@ class DataProcessor:
     @staticmethod
     def clean_data(df):
         """
-        Clean data by removing duplicates and handling missing values
+        Remove duplicates without inventing missing raw source values.
         """
         if df is None or df.empty:
             logger.warning("Empty DataFrame received for cleaning")
             return df
         
         original_rows = len(df)
+        df = df.copy()
         
         # Drop duplicates
         if DROP_DUPLICATES:
             df = df.drop_duplicates()
             logger.info(f"Removed {original_rows - len(df)} duplicate rows")
         
-        # Fill missing values
-        if FILL_MISSING_VALUES:
-            df = df.fillna(method='ffill').fillna(method='bfill')
-            logger.info(f"Filled missing values using forward/backward fill")
-        
+        # Never forward/backfill across issuers or dates in raw collected evidence.
+        # The legacy FILL_MISSING_VALUES switch cannot authorize raw imputation.
+        # Any analytical imputation must be explicit, scoped, and stored separately.
         return df
     
     @staticmethod

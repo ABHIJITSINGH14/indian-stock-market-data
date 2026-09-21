@@ -1,5 +1,6 @@
 import pandas as pd
 import yfinance as yf
+from requests.exceptions import HTTPError
 from config.config import FUNDAMENTALS_CSV_PATH
 from utils.logger import setup_logger
 from utils.data_processor import DataProcessor
@@ -53,6 +54,12 @@ class FundamentalsDownloader:
             
             return fundamentals
         
+        except HTTPError as e:
+            if e.response is not None and e.response.status_code in (401, 403, 429):
+                # Stop this task; do not repeat a denied/rate-limited call for every ticker.
+                raise
+            logger.error(f"Error fetching fundamentals for {symbol}: {str(e)}")
+            return None
         except Exception as e:
             logger.error(f"Error fetching fundamentals for {symbol}: {str(e)}")
             return None

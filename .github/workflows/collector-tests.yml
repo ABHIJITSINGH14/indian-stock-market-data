@@ -1,0 +1,70 @@
+name: Collector contracts and artifact smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'utils/**'
+      - 'tests/**'
+      - 'config/**'
+      - 'requirements.txt'
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'utils/**'
+      - 'tests/**'
+      - 'config/**'
+      - 'requirements.txt'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pip check
+      - name: Offline collector contracts
+        run: python -m unittest discover -s tests -p 'test_collector_contracts.py' -v
+      - name: Create explicitly synthetic inputs
+        run: python tests/artifact_smoke.py produce --directory "$RUNNER_TEMP/synthetic-inputs"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-ci-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/synthetic-inputs/
+          if-no-files-found: error
+          retention-days: 7
+
+  artifact-consumer:
+    needs: contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: synthetic-ci-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/synthetic-inputs/
+      - name: Verify identity, checksums, and actual analyzer
+        run: python tests/artifact_smoke.py consume --directory "$RUNNER_TEMP/synthetic-inputs" --report "$RUNNER_TEMP/synthetic-report.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-ci-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/synthetic-report.txt
+          if-no-files-found: error
+          retention-days: 7
