@@ -1,0 +1,111 @@
+name: Yahoo module boundary diagnostic
+
+on:
+  push:
+    branches: [fix/live-source-restoration]
+    paths: [.github/workflows/yahoo-boundary-diagnostic.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - name: Observe existing calls and one explicitly requested price module
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, math, os, time
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import yfinance as yf
+          from yfinance.scrapers.quote import Quote
+          from scripts.download_nse_data import NSEDataDownloader
+          from scripts.download_fundamentals import FundamentalsDownloader
+          yf.config.debug.hide_exceptions = False
+          yf.config.network.retries = 0
+          root = Path(os.environ['RUNNER_TEMP']) / 'yahoo-boundary'
+          root.mkdir(exist_ok=False)
+          out = {'run_id': os.environ['GITHUB_RUN_ID'], 'commit_sha': os.environ['GITHUB_SHA'],
+                 'checked_at': datetime.now(timezone.utc).isoformat(), 'yfinance': yf.__version__,
+                 'scope': 'one issuer; raw module metadata only; not production collection', 'calls': []}
+          original_fetch, original_additional = Quote._fetch, Quote._fetch_additional_info
+          def safe_shape(value):
+              if not isinstance(value, dict):
+                  return {'type': type(value).__name__}
+              raw = value.get('raw')
+              return {'type': 'dict', 'keys': sorted(value), 'raw_type': type(raw).__name__,
+                      'raw_positive_finite': not isinstance(raw, bool) and isinstance(raw, (int,float)) and math.isfinite(raw) and raw > 0}
+          def observe(label, payload):
+              record = {'call': label, 'payload_type': type(payload).__name__, 'results': []}
+              if isinstance(payload, dict):
+                  for family in ('quoteSummary', 'quoteResponse'):
+                      envelope = payload.get(family)
+                      if not isinstance(envelope, dict):
+                          continue
+                      record[family + '_error_present'] = envelope.get('error') is not None
+                      for item in envelope.get('result') or []:
+                          row = {'family': family, 'keys': sorted(item), 'symbol': item.get('symbol'),
+                                 'market_cap_present': 'marketCap' in item, 'cap_shape': safe_shape(item.get('marketCap'))}
+                          row['modules'] = {k: {'keys': sorted(v), 'market_cap_present': 'marketCap' in v,
+                                               'cap_shape': safe_shape(v.get('marketCap')), 'symbol': v.get('symbol'),
+                                               'currency': v.get('currency')} for k,v in item.items() if isinstance(v,dict)}
+                          record['results'].append(row)
+              out['calls'].append(record)
+          def tracked_fetch(self, modules):
+              value = original_fetch(self, modules)
+              observe('quoteSummary:' + ','.join(modules), value)
+              return value
+          def tracked_additional(self):
+              value = original_additional(self)
+              observe('quoteResponse', value)
+              return value
+          Quote._fetch, Quote._fetch_additional_info = tracked_fetch, tracked_additional
+          try:
+              price = NSEDataDownloader(['RELIANCE.NS'], '2026-09-14', '2026-09-19', root / 'prices.csv')
+              if not price.run():
+                  raise ValueError('Price adapter failed; stop this diagnostic')
+              time.sleep(2)
+              fundamentals = FundamentalsDownloader(['RELIANCE.NS'], root / 'fundamentals.csv')
+              out['combined_adapter_success'] = fundamentals.run()
+              out['fundamentals_response'] = fundamentals.last_response_metadata
+              if not out['combined_adapter_success']:
+                  # Request the same library's declared price module, not a different host or identity.
+                  # No attempt is made after an explicit authentication/rate-limit exception.
+                  time.sleep(2)
+                  ticker = yf.Ticker('RELIANCE.NS')
+                  payload = ticker._quote._fetch(modules=['price'])
+                  result = payload.get('quoteSummary', {}).get('result') or []
+                  module = result[0].get('price') if len(result) == 1 else None
+                  if isinstance(module, dict):
+                      out['explicit_price_module'] = {k: module.get(k) for k in ('symbol', 'currency', 'exchangeName', 'quoteType', 'marketCap', 'regularMarketTime')}
+          except Exception as exc:
+              out['exception_type'] = type(exc).__name__
+              out['failed'] = True
+          finally:
+              Quote._fetch, Quote._fetch_additional_info = original_fetch, original_additional
+              text = json.dumps(out, indent=2, allow_nan=False)
+              (root / 'boundary.json').write_text(text)
+              print(text)
+          if not out.get('combined_adapter_success'):
+              raise SystemExit(1)
+          PY
+      - name: Preserve metadata without publishing partial market data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yahoo-boundary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/yahoo-boundary/boundary.json
+          retention-days: 7
+          if-no-files-found: error
