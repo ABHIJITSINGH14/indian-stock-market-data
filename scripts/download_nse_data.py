@@ -1,5 +1,4 @@
 """Yahoo-sourced NSE-listed prices; the legacy output name is not an exchange bhavcopy."""
-import math
 import re
 import time
 from datetime import date, datetime, timezone
@@ -11,6 +10,7 @@ import yfinance as yf
 from config.config import START_DATE, END_DATE, BHAVCOPY_CSV_PATH
 from utils.logger import setup_logger
 from utils.data_processor import DataProcessor
+from utils.price_evidence import audit_price_frame, write_price_evidence
 
 logger = setup_logger(__name__)
 
@@ -39,6 +39,8 @@ class NSEDataDownloader:
         self.processor = DataProcessor()
         self.all_data = pd.DataFrame()
         self.coverage = {}
+        self.evidence_dir = self.output_path.parent / "price-rejections"
+        self.rejection_evidence = []
 
     def download_stock_data(self, symbol):
         try:
@@ -49,37 +51,24 @@ class NSEDataDownloader:
                 keepna=True, multi_level_index=False, threads=False,
                 progress=False, timeout=30,
             )
-            if frame is None or frame.empty:
-                raise ValueError('No price observations; source availability is unverified')
-            if isinstance(frame.columns, pd.MultiIndex) or frame.columns.has_duplicates:
-                raise ValueError('Unexpected or ambiguous price columns')
-            required = ['Open', 'High', 'Low', 'Close', 'Volume']
-            if not set(required).issubset(frame.columns):
-                raise ValueError('Required OHLCV fields are missing')
-            if not isinstance(frame.index, pd.DatetimeIndex) or frame.index.hasnans or frame.index.has_duplicates:
-                raise ValueError('Invalid or duplicate observation dates')
-            days = frame.index.date
-            if any(not self.start_date <= d < self.end_date for d in days):
-                raise ValueError('Observation outside requested date bounds')
-            if len(set(days)) != len(days):
-                raise ValueError('More than one daily observation per date')
-            for column in required:
-                if not pd.api.types.is_numeric_dtype(frame[column]) or pd.api.types.is_bool_dtype(frame[column]):
-                    raise ValueError('Nonnumeric price column: ' + column)
-                values = frame[column]
-                if not values.map(math.isfinite).all() or not (values >= 0).all():
-                    raise ValueError('Invalid numeric observations: ' + column)
-                if column != 'Volume' and not (values > 0).all():
-                    raise ValueError('Nonpositive price: ' + column)
-            if not (frame['Volume'] % 1 == 0).all():
-                raise ValueError('Fractional daily traded volume')
-            if 'Adj Close' in frame:
-                adjusted = pd.to_numeric(frame['Adj Close'].dropna(), errors='raise')
-                if not adjusted.map(math.isfinite).all() or not (adjusted > 0).all():
-                    raise ValueError('Invalid provider adjusted close')
-            if not ((frame['High'] >= frame[['Open', 'Close', 'Low']].max(axis=1)) &
-                    (frame['Low'] <= frame[['Open', 'Close', 'High']].min(axis=1))).all():
-                raise ValueError('OHLC ordering is inconsistent')
+            audit = audit_price_frame(frame, self.start_date, self.end_date)
+            if not audit.passed:
+                target, manifest = write_price_evidence(frame, audit, self.evidence_dir, {
+                    'source': 'yahoo_finance', 'provider_symbol': symbol,
+                    'provider_version': yf.__version__,
+                    'retrieved_at_utc': datetime.now(timezone.utc).isoformat(),
+                    'requested_start': self.start_date.isoformat(),
+                    'requested_end_exclusive': self.end_date.isoformat(),
+                    'price_basis': 'provider_ohlc_no_additional_yfinance_adjustment',
+                })
+                record = {'symbol': symbol, 'manifest': str(target / 'manifest.json'),
+                          'usable_rows': manifest['usable_rows'],
+                          'rejected_rows': manifest['rejected_rows'],
+                          'frame_errors': manifest['frame_errors'],
+                          'rejection_counts': manifest['rejection_counts']}
+                self.rejection_evidence.append(record)
+                logger.error('Price admission failed; evidence: %s', record)
+                return None  # Diagnostic recovery never changes whole-frame admission.
             result = frame.copy().sort_index()
             result.index.name = 'Date'
             result = result.reset_index()
@@ -102,8 +91,10 @@ class NSEDataDownloader:
 
     def download_all_stocks(self):
         self.all_data = pd.DataFrame()
+        self.rejection_evidence = []
         self.coverage = {'requested': list(self.symbols), 'returned': [],
-                         'not_returned': list(self.symbols), 'historical_completeness': 'not_verified'}
+                         'not_returned': list(self.symbols), 'historical_completeness': 'not_verified',
+                         'rejection_evidence': self.rejection_evidence}
         frames = []
         try:
             for index, symbol in enumerate(self.symbols):
