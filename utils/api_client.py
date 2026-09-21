@@ -1,64 +1,61 @@
-import requests
 import time
+
+import requests
+
 from config.config import API_RETRY_ATTEMPTS, API_RETRY_DELAY, API_TIMEOUT, REQUEST_DELAY
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+
 class APIClient:
-    """
-    Generic API client with retry logic and error handling
-    """
+    """Bounded requests; do not retry access denials, rate limits, or TLS errors."""
+
     def __init__(self):
         self.session = requests.Session()
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-    
+
     def get(self, url, params=None, retry=True):
-        """
-        GET request with retry logic
-        """
-        attempt = 0
-        while attempt < API_RETRY_ATTEMPTS:
+        attempts = max(1, API_RETRY_ATTEMPTS) if retry else 1
+        for attempt in range(1, attempts + 1):
             try:
                 time.sleep(REQUEST_DELAY)
                 response = self.session.get(
-                    url,
-                    params=params,
-                    headers=self.headers,
-                    timeout=API_TIMEOUT
+                    url, params=params, headers=self.headers, timeout=API_TIMEOUT
                 )
                 response.raise_for_status()
-                logger.info(f"Successfully fetched: {url}")
+                logger.info("HTTP %s received: %s", response.status_code, url)
                 return response
-            except requests.exceptions.RequestException as e:
-                attempt += 1
-                if attempt < API_RETRY_ATTEMPTS and retry:
-                    logger.warning(f"Attempt {attempt} failed for {url}: {str(e)}. Retrying in {API_RETRY_DELAY}s...")
-                    time.sleep(API_RETRY_DELAY)
-                else:
-                    logger.error(f"Failed to fetch {url} after {API_RETRY_ATTEMPTS} attempts: {str(e)}")
+            except requests.exceptions.RequestException as exc:
+                response = getattr(exc, 'response', None)
+                status = response.status_code if response is not None else None
+                # A 429 is not permission to send another immediate request.
+                # Leave TLS verification enabled; retrying cannot repair a TLS failure.
+                terminal = isinstance(exc, requests.exceptions.SSLError) or (
+                    status is not None and 400 <= status < 500
+                )
+                if terminal or attempt == attempts:
+                    logger.error("Failed to fetch %s after %s attempt(s): %s", url, attempt, exc)
                     raise
-        return None
-    
+                logger.warning(
+                    "Attempt %s failed for %s: %s. Retrying in %ss...",
+                    attempt, url, exc, API_RETRY_DELAY,
+                )
+                time.sleep(API_RETRY_DELAY)
+
     def download_file(self, url, save_path):
-        """
-        Download file from URL and save to disk
-        """
         try:
             response = self.get(url, retry=True)
-            if response:
-                with open(save_path, 'wb') as f:
-                    f.write(response.content)
-                logger.info(f"File saved to {save_path}")
+            if response is not None:
+                with open(save_path, 'wb') as file:
+                    file.write(response.content)
+                logger.info("File saved to %s", save_path)
                 return True
-        except Exception as e:
-            logger.error(f"Error downloading file: {str(e)}")
+        except Exception as exc:
+            logger.error("Error downloading file: %s", exc)
         return False
-    
+
     def close(self):
-        """
-        Close the session
-        """
         self.session.close()

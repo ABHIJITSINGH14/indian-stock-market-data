@@ -4,6 +4,10 @@ Main orchestration script to run all data downloads
 """
 
 import sys
+import json
+import os
+from pathlib import Path
+from config.config import LOG_DIR
 import time
 from datetime import datetime
 from scripts.download_nse_data import NSEDataDownloader
@@ -79,6 +83,18 @@ def run_all_downloads():
     logger.info(f"Completed at: {datetime.now()}")
     logger.info(f"{'='*80}\n")
     
+    # Diagnostics are separate from data/raw: a manifest is not a dataset.
+    summary = {
+        'schema_version': 1,
+        'run_id': os.environ.get('GITHUB_RUN_ID'),
+        'commit_sha': os.environ.get('GITHUB_SHA'),
+        'all_tasks_success': failed == 0,
+        'historical_completeness': 'not_verified',
+        'tasks': results,
+    }
+    Path(LOG_DIR, 'download-summary.json').write_text(
+        json.dumps(summary, indent=2, allow_nan=False) + '\n', encoding='utf-8'
+    )
     return failed == 0
 
 if __name__ == '__main__':
