@@ -4,16 +4,47 @@ on:
   workflow_run:
     workflows: ["Download Stock Market Data"]
     types: [completed]
+    branches: [main]
   
   workflow_dispatch:
+    inputs:
+      download_run_id:
+        description: 'Successful main download run containing downloaded-data'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   analyze-data:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     
     steps:
+    - name: Validate source download run
+      id: source
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.download_run_id }}
+      run: |
+        [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+        gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > "$RUNNER_TEMP/source-run.json"
+        jq -e --arg repo "$GITHUB_REPOSITORY" '
+          .repository.full_name == $repo and
+          .path == ".github/workflows/download-data.yml" and
+          .head_branch == "main" and
+          .status == "completed" and .conclusion == "success"
+        ' "$RUNNER_TEMP/source-run.json" > /dev/null
+        echo "run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
+        echo "sha=$(jq -r .head_sha "$RUNNER_TEMP/source-run.json")" >> "$GITHUB_OUTPUT"
+
     - name: Checkout repository
       uses: actions/checkout@v3
+      with:
+        ref: ${{ steps.source.outputs.sha }}
     
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -25,16 +56,48 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: Run analysis
-      run: python scripts/analyze_data.py
+    - name: Download source data
+      uses: actions/download-artifact@v4
+      with:
+        name: downloaded-data
+        path: data/raw/
+        github-token: ${{ github.token }}
+        run-id: ${{ steps.source.outputs.run_id }}
+
+    - name: Reject missing or unusable core data
+      run: |
+        python - <<'PYDATA'
+        from pathlib import Path
+        import pandas as pd
+        required = {
+            "nse_bhavcopy.csv": {"symbol", "date", "close"},
+            "fundamentals.csv": {"symbol", "market_cap"},
+        }
+        for filename, columns in required.items():
+            frame = pd.read_csv(Path("data/raw") / filename)
+            if frame.empty or not columns.issubset(frame.columns):
+                raise SystemExit(f"Missing rows or required columns: {filename}")
+            if frame[list(columns)].isna().any().any():
+                raise SystemExit(f"Null core analysis values: {filename}")
+            numeric = "close" if filename == "nse_bhavcopy.csv" else "market_cap"
+            values = pd.to_numeric(frame[numeric], errors="raise")
+            if not ((values > 0) & (values < float("inf"))).all():
+                raise SystemExit(f"Nonpositive or nonfinite {numeric}: {filename}")
+        PYDATA
     
     - name: Generate report
+      shell: bash
+      env:
+        SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+        SOURCE_SHA: ${{ steps.source.outputs.sha }}
       run: |
-        python scripts/analyze_data.py > analysis_report.txt 2>&1
+        printf 'Source download run: %s\nSource commit: %s\n' "$SOURCE_RUN_ID" "$SOURCE_SHA" > analysis_report.txt
+        python -m scripts.analyze_data 2>&1 | tee -a analysis_report.txt
     
     - name: Upload analysis report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: analysis-report
         path: analysis_report.txt
+        if-no-files-found: error
         retention-days: 30
