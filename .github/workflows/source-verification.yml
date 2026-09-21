@@ -1,0 +1,79 @@
+name: Live Yahoo adapter sample
+# Real adapter validation; missing provider fields remain a hard failure.
+
+on:
+  push:
+    branches: [fix/live-source-restoration]
+    paths:
+      - .github/workflows/source-verification.yml
+      - scripts/download_nse_data.py
+      - scripts/download_fundamentals.py
+      - tests/live_yahoo_sample.py
+      - requirements.txt
+  workflow_dispatch:
+
+concurrency:
+  group: yahoo-live-adapter-validation
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  live-sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pip check
+      - name: Offline contracts before any provider call
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Real adapters, one explicit issuer and five price sessions
+        timeout-minutes: 2
+        run: python tests/live_yahoo_sample.py produce --directory "$RUNNER_TEMP/live-yahoo-sample"
+      - name: Upload scoped live sample only after adapter success
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-yahoo-sample-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/live-yahoo-sample/
+          retention-days: 7
+          if-no-files-found: error
+      - name: Failure diagnostics are not market data
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yahoo-sample-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/live-yahoo-sample/failure-diagnostics.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  live-sample-consumer:
+    needs: live-sample
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: live-yahoo-sample-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/live-yahoo-sample/
+      - name: Verify source identity and bytes, then run actual analyzer
+        run: python tests/live_yahoo_sample.py consume --directory "$RUNNER_TEMP/live-yahoo-sample" --report "$RUNNER_TEMP/live-yahoo-report.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-yahoo-sample-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/live-yahoo-report.txt
+          retention-days: 7
+          if-no-files-found: error

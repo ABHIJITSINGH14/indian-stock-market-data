@@ -1,6 +1,11 @@
 import pandas as pd
 import yfinance as yf
 from requests.exceptions import HTTPError
+import math
+import re
+import time
+from pathlib import Path
+from datetime import datetime, timezone
 from config.config import FUNDAMENTALS_CSV_PATH
 from utils.logger import setup_logger
 from utils.data_processor import DataProcessor
@@ -12,7 +17,16 @@ class FundamentalsDownloader:
     Download company fundamentals and financial ratios
     """
     
-    def __init__(self):
+    def __init__(self, symbols=None, output_path=None):
+        self.symbols = list(self.STOCKS if symbols is None else symbols)
+        if not self.symbols or len(set(self.symbols)) != len(self.symbols) or any(
+            not isinstance(s, str) or not re.fullmatch(r'[A-Z0-9][A-Z0-9&.\-]*\.NS', s)
+            for s in self.symbols
+        ):
+            raise ValueError('Provide distinct, explicit NSE Yahoo ticker identities')
+        self.output_path = Path(FUNDAMENTALS_CSV_PATH if output_path is None else output_path)
+        self.coverage = {}
+        self.last_response_metadata = {}
         self.processor = DataProcessor()
         self.data = pd.DataFrame()
     
@@ -32,24 +46,49 @@ class FundamentalsDownloader:
             ticker = yf.Ticker(symbol)
             
             info = ticker.info
+            # Record shape/types only: partial quote dictionaries must not masquerade as fundamentals.
+            self.last_response_metadata = {
+                'requested_symbol': symbol,
+                'payload_type': type(info).__name__,
+                'field_count': len(info) if isinstance(info, dict) else None,
+                'fields': sorted(info) if isinstance(info, dict) else [],
+                'market_cap_type': type(info.get('marketCap')).__name__ if isinstance(info, dict) else None,
+                'market_cap_present': 'marketCap' in info if isinstance(info, dict) else False,
+                'currency': info.get('currency') if isinstance(info, dict) else None,
+                'symbol_matches': info.get('symbol') == symbol if isinstance(info, dict) else False,
+            }
+            if not isinstance(info, dict) or info.get('symbol') != symbol:
+                raise ValueError('Missing or mismatched issuer identity')
+            cap = info.get('marketCap')
+            if isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap) or cap <= 0:
+                raise ValueError('Missing valid market cap; do not manufacture fundamentals')
+            if info.get('currency') != 'INR':
+                raise ValueError('Market cap currency is not verified as INR')
             
             fundamentals = {
-                'symbol': symbol.replace('.NS', ''),
-                'name': info.get('longName', 'N/A'),
-                'sector': info.get('sector', 'N/A'),
-                'industry': info.get('industry', 'N/A'),
-                'market_cap': info.get('marketCap', 'N/A'),
-                'pe_ratio': info.get('trailingPE', 'N/A'),
-                'dividend_yield': info.get('dividendYield', 'N/A'),
-                'book_value': info.get('bookValue', 'N/A'),
-                'pb_ratio': info.get('priceToBook', 'N/A'),
-                'revenue': info.get('totalRevenue', 'N/A'),
-                'net_income': info.get('netIncomeToCommon', 'N/A'),
-                'roe': info.get('returnOnEquity', 'N/A'),
-                'debt_to_equity': info.get('debtToEquity', 'N/A'),
-                'current_price': info.get('currentPrice', 'N/A'),
-                '52_week_high': info.get('fiftyTwoWeekHigh', 'N/A'),
-                '52_week_low': info.get('fiftyTwoWeekLow', 'N/A'),
+                'symbol': symbol[:-3],
+                'provider_symbol': symbol,
+                'source': 'yahoo_finance',
+                'provider_version': yf.__version__,
+                'retrieved_at_utc': datetime.now(timezone.utc).isoformat(),
+                'snapshot_only': True,
+                'market_cap_currency': info['currency'],
+                'financial_currency': info.get('financialCurrency'),
+                'name': info.get('longName'),
+                'sector': info.get('sector'),
+                'industry': info.get('industry'),
+                'market_cap': info.get('marketCap'),
+                'pe_ratio': info.get('trailingPE'),
+                'dividend_yield': info.get('dividendYield'),
+                'book_value': info.get('bookValue'),
+                'pb_ratio': info.get('priceToBook'),
+                'revenue': info.get('totalRevenue'),
+                'net_income': info.get('netIncomeToCommon'),
+                'roe': info.get('returnOnEquity'),
+                'debt_to_equity': info.get('debtToEquity'),
+                'current_price': info.get('currentPrice'),
+                '52_week_high': info.get('fiftyTwoWeekHigh'),
+                '52_week_low': info.get('fiftyTwoWeekLow'),
             }
             
             return fundamentals
@@ -61,6 +100,10 @@ class FundamentalsDownloader:
             logger.error(f"Error fetching fundamentals for {symbol}: {str(e)}")
             return None
         except Exception as e:
+            if type(e).__name__ == 'YFRateLimitError' or getattr(
+                getattr(e, 'response', None), 'status_code', None
+            ) in (401, 403, 429):
+                raise
             logger.error(f"Error fetching fundamentals for {symbol}: {str(e)}")
             return None
     
@@ -68,21 +111,27 @@ class FundamentalsDownloader:
         """
         Download fundamentals for all stocks
         """
+        self.data = pd.DataFrame()
+        self.last_response_metadata = {}
+        self.coverage = {'requested': list(self.symbols), 'returned': [],
+                         'not_returned': list(self.symbols), 'historical_completeness': 'not_verified'}
         all_fundamentals = []
-        
-        for symbol in self.STOCKS:
-            fundamentals = self.fetch_stock_info(symbol)
-            if fundamentals:
+        try:
+            for index, symbol in enumerate(self.symbols):
+                if index:
+                    time.sleep(2)
+                fundamentals = self.fetch_stock_info(symbol)
+                if fundamentals is None:
+                    logger.error('Stopping after unverified fundamentals; remaining issuers stay unverified')
+                    return False
                 all_fundamentals.append(fundamentals)
-        
-        if all_fundamentals:
-            self.data = pd.DataFrame(all_fundamentals)
-            logger.info(f"Downloaded fundamentals for {len(self.data)} companies")
-            return True
-        else:
-            logger.error("No fundamentals downloaded")
-            return False
-    
+                self.coverage['returned'].append(symbol)
+                self.coverage['not_returned'].remove(symbol)
+            return bool(all_fundamentals)
+        finally:
+            if all_fundamentals:
+                self.data = pd.DataFrame(all_fundamentals)
+
     def save_data(self):
         """
         Save fundamentals to CSV
@@ -95,20 +144,21 @@ class FundamentalsDownloader:
         self.data = self.processor.clean_data(self.data)
         
         # Save to CSV
-        return self.processor.save_csv(self.data, FUNDAMENTALS_CSV_PATH)
+        return self.processor.save_csv(self.data, self.output_path)
     
     def run(self):
         """
         Execute complete fundamentals download
         """
-        logger.info("Starting fundamentals download...")
-        if self.download_all_fundamentals():
-            return self.save_data()
-        return False
+        complete = False
+        saved = False
+        try:
+            complete = self.download_all_fundamentals()
+        finally:
+            if not self.data.empty:
+                saved = self.save_data()
+        return complete and saved
+
 
 if __name__ == '__main__':
-    downloader = FundamentalsDownloader()
-    if downloader.run():
-        logger.info("Fundamentals download completed successfully!")
-    else:
-        logger.error("Fundamentals download failed!")
+    raise SystemExit(0 if FundamentalsDownloader().run() else 1)

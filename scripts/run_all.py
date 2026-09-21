@@ -65,6 +65,12 @@ def run_all_downloads():
                 'error': str(e)
             }
     
+    # Keep returned/missing identity coverage alongside success/failure diagnostics.
+    for task_name, downloader in tasks:
+        coverage = getattr(downloader, 'coverage', None)
+        if isinstance(coverage, dict):
+            results[task_name]['coverage'] = coverage
+
     # Print summary
     logger.info(f"\n{'='*80}")
     logger.info("DOWNLOAD SUMMARY")
