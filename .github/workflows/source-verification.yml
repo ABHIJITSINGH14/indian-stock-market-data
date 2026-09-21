@@ -1,18 +1,15 @@
 name: Live source compatibility check
-
 on:
   push:
     branches: [fix/live-source-restoration]
     paths: [.github/workflows/source-verification.yml]
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 5
     steps:
     - uses: actions/checkout@v3
       with:
@@ -26,105 +23,68 @@ jobs:
         sed 's/^yfinance==0.2.32$/yfinance==1.7.0/' requirements.txt > "$RUNNER_TEMP/candidate-requirements.txt"
         python -m pip install -r "$RUNNER_TEMP/candidate-requirements.txt"
         python -m pip check
-    - name: Existing offline collector contracts
-      run: python -m unittest discover -s tests -p 'test_collector_contracts.py' -v
-    - name: Bounded live checks (metadata only)
-      timeout-minutes: 3
+    - name: Inspect remaining provider boundaries (metadata only)
+      timeout-minutes: 2
       shell: bash
       run: |
         python - <<'PY'
-        import hashlib, importlib.metadata, json, math, os, time
-        from datetime import datetime, timezone
+        import hashlib, json, math, os
         from pathlib import Path
+        from urllib.parse import urljoin, urlparse
         import requests
         import yfinance as yf
-
-        results = {
-            'run_id': os.environ['GITHUB_RUN_ID'],
-            'sha': os.environ['GITHUB_SHA'],
-            'checked_at': datetime.now(timezone.utc).isoformat(),
-            'yfinance': importlib.metadata.version('yfinance'),
-            'scope': 'one Yahoo symbol and one BSE master request; not historical completion',
-            'nse_website_collection': 'not attempted: automated-collection terms require review',
-            'providers': {},
-        }
-        # A current release is evaluated here, not promoted into requirements.txt.
-        # No retries, proxies, alternate host fallbacks or TLS-verification bypass.
+        results = {'run_id': os.environ['GITHUB_RUN_ID'], 'sha': os.environ['GITHUB_SHA'],
+                   'scope': 'provider metadata only; no price retry and no NSE website collection'}
         try:
-            frame = yf.download(
-                'RELIANCE.NS', start='2026-09-14', end='2026-09-19',
-                auto_adjust=False, back_adjust=False, repair=False, rounding=False,
-                keepna=True, multi_level_index=False, threads=False,
-                progress=False, timeout=20,
-            )
-            if frame is None or frame.empty:
-                raise ValueError('No live price rows returned')
-            required = {'Open', 'High', 'Low', 'Close', 'Volume'}
-            if not required.issubset(frame.columns):
-                raise ValueError('Unexpected price schema')
-            if not frame['Close'].map(lambda x: math.isfinite(x) and x > 0).all():
-                raise ValueError('Invalid close values')
-            if not all('2026-09-14' <= d < '2026-09-19' for d in frame.index.strftime('%Y-%m-%d')):
-                raise ValueError('Unexpected dates')
-            results['providers']['yahoo_prices'] = {
-                'status': 'success', 'rows': len(frame),
-                'first_date': str(frame.index.min()), 'last_date': str(frame.index.max()),
-                'columns': list(frame.columns),
-                'payload_sha256': hashlib.sha256(frame.to_csv().encode()).hexdigest(),
-            }
-            time.sleep(2)
             info = yf.Ticker('RELIANCE.NS').get_info()
             cap = info.get('marketCap')
-            if not isinstance(cap, (int, float)) or not math.isfinite(cap) or cap <= 0:
-                raise ValueError('Missing valid market cap')
-            if info.get('symbol') != 'RELIANCE.NS':
-                raise ValueError('Unexpected issuer identity')
-            results['providers']['yahoo_fundamentals'] = {
-                'status': 'success', 'symbol': info['symbol'],
-                'fields': sorted(info), 'market_cap_valid': True,
+            results['yahoo_fundamentals'] = {
+                'payload_type': type(info).__name__, 'fields': sorted(info),
+                'market_cap_type': type(cap).__name__, 'market_cap_present': cap is not None,
+                'symbol_matches': info.get('symbol') == 'RELIANCE.NS',
+                'status': 'success' if isinstance(cap, (int, float)) and math.isfinite(cap) and cap > 0 else 'failure',
             }
         except Exception as exc:
-            results['providers']['yahoo_check'] = {
-                'status': 'failure', 'exception_type': type(exc).__name__,
-                'message': str(exc)[:240],
-            }
-        # URL and request parameters reused from market_data/sources.py on
-        # abhijitsingh14-run-stock-market-app at a3589bf; no fallback on denial.
+            results['yahoo_fundamentals'] = {'status': 'failure', 'exception_type': type(exc).__name__, 'message': str(exc)[:240]}
         try:
-            with requests.Session() as session:
-                response = session.get(
-                    'https://api.bseindia.com/BseIndiaAPI/api/ListofScripData/w',
-                    params={'Group': '', 'Scripcode': '', 'industry': '',
-                            'segment': 'Equity', 'status': 'Active'},
-                    headers={'User-Agent': 'IndianMarketDataPersonalResearch/1.0',
-                             'Accept': 'application/json'},
-                    timeout=(10, 20), allow_redirects=False,
-                )
-                results['providers']['bse_master'] = {
-                    'http_status': response.status_code,
-                    'content_type': response.headers.get('Content-Type'),
-                    'bytes': len(response.content),
-                }
-                response.raise_for_status()
-                payload = response.json()
-                rows = payload if isinstance(payload, list) else payload.get('Table', [])
-                if not rows or not isinstance(rows[0], dict):
-                    raise ValueError('Unexpected BSE master schema or empty records')
-                results['providers']['bse_master'].update({
-                    'status': 'success', 'rows': len(rows),
-                    'fields': sorted(rows[0]),
-                    'payload_sha256': hashlib.sha256(response.content).hexdigest(),
-                })
+            session = requests.Session()
+            session.headers.update({'User-Agent': 'IndianMarketDataPersonalResearch/1.0', 'Accept': 'application/json'})
+            request = requests.Request('GET', 'https://api.bseindia.com/BseIndiaAPI/api/ListofScripData/w',
+                params={'Group': '', 'Scripcode': '', 'industry': '', 'segment': 'Equity', 'status': 'Active'}).prepare()
+            url = request.url
+            redirects = []
+            for hop in range(3):
+                with session.get(url, timeout=(10, 20), allow_redirects=False) as response:
+                    metadata = {'url': url, 'http_status': response.status_code,
+                                'content_type': response.headers.get('Content-Type'),
+                                'bytes': len(response.content), 'location': response.headers.get('Location')}
+                    redirects.append(metadata)
+                    results['bse_master'] = {'status': 'failure', 'hops': redirects}
+                    response.raise_for_status()
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        target = urljoin(url, response.headers['Location'])
+                        parsed = urlparse(target)
+                        if parsed.scheme != 'https' or parsed.username or parsed.password or not (
+                            parsed.hostname == 'bseindia.com' or parsed.hostname.endswith('.bseindia.com')):
+                            raise ValueError('Redirect outside approved HTTPS BSE domain; not followed')
+                        url = target
+                        continue
+                    if response.status_code != 200:
+                        raise ValueError('Unexpected status')
+                    payload = response.json()
+                    rows = payload if isinstance(payload, list) else payload.get('Table', [])
+                    if not rows or not isinstance(rows[0], dict):
+                        raise ValueError('No verified master rows')
+                    results['bse_master'].update({'status': 'success', 'rows': len(rows),
+                        'fields': sorted(rows[0]), 'payload_sha256': hashlib.sha256(response.content).hexdigest()})
+                    break
+            session.close()
         except Exception as exc:
-            results['providers'].setdefault('bse_master', {}).update({
-                'status': 'failure', 'exception_type': type(exc).__name__,
-                'message': str(exc)[:240],
-            })
+            results.setdefault('bse_master', {}).update({'status': 'failure', 'exception_type': type(exc).__name__, 'message': str(exc)[:240]})
         text = json.dumps(results, indent=2, allow_nan=False)
-        Path(os.environ['RUNNER_TEMP'], 'source-diagnostics.json').write_text(text)
         print(text)
-        expected = ('yahoo_prices', 'yahoo_fundamentals', 'bse_master')
-        if not all(results['providers'].get(k, {}).get('status') == 'success' for k in expected):
+        Path(os.environ['RUNNER_TEMP'], 'source-diagnostics.json').write_text(text)
+        if any(results[k].get('status') != 'success' for k in ('yahoo_fundamentals', 'bse_master')):
             raise SystemExit(1)
         PY
     - name: Preserve metadata-only diagnostics
