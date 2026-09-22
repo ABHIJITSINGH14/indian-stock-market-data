@@ -69,6 +69,15 @@ jobs:
         if-no-files-found: ignore
         retention-days: 7
 
+    - name: Preserve outstanding archival price work separately
+      uses: actions/upload-artifact@v4
+      if: always() && hashFiles('data/raw/price-archive-requests/**/manifest.json') != ''
+      with:
+        name: price-archival-work-${{ github.run_id }}-${{ github.run_attempt }}
+        path: data/raw/price-archive-requests/**/manifest.json
+        retention-days: 7
+        if-no-files-found: error
+
     - name: Upload logs
       uses: actions/upload-artifact@v4
       if: always()

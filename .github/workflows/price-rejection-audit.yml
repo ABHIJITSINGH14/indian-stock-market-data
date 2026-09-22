@@ -2,11 +2,12 @@ name: Historical price rejection audit
 # A rejected frame remains a FAILED run; saved diagnostic subsets are not production data.
 on:
   push:
-    branches: [fix/price-rejection-evidence, fix/price-failure-isolation]
+    branches: [fix/price-rejection-evidence, fix/price-failure-isolation, fix/hdfc-price-archival-routing]
     paths:
       - .github/workflows/price-rejection-audit.yml
       - scripts/download_nse_data.py
       - scripts/audit_price_history.py
+      - config/issuer_identity.py
       - utils/price_evidence.py
       - requirements.txt
   workflow_dispatch:
@@ -32,12 +33,12 @@ jobs:
       - run: python -m pip check
       - name: Offline contracts before bounded provider requests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
-      - name: Two issuers, unchanged historical range, isolated row failures
+      - name: Archive HDFC work and examine the next issuer without weakening admission
         timeout-minutes: 3
         run: >-
           python -m scripts.audit_price_history
           --directory "$RUNNER_TEMP/historical-price-audit"
-          --symbols RELIANCE.NS TCS.NS --continue-after-row-rejection
+          --symbols HDFC.NS ICICIBANK.NS --continue-after-row-rejection --defer-archival-prices
       - name: Preserve rejection evidence without turning failure into success
         if: always()
         uses: actions/upload-artifact@v4

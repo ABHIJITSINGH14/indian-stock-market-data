@@ -1,5 +1,9 @@
 """Yahoo-sourced NSE-listed prices; the legacy output name is not an exchange bhavcopy."""
+import hashlib
+import json
+import os
 import re
+import tempfile
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -8,7 +12,7 @@ import pandas as pd
 import yfinance as yf
 
 from config.config import START_DATE, END_DATE, BHAVCOPY_CSV_PATH
-from config.issuer_identity import reject_known_typo
+from config.issuer_identity import reject_known_typo, historical_price_deferral
 from utils.logger import setup_logger
 from utils.data_processor import DataProcessor
 from utils.price_evidence import audit_price_frame, write_price_evidence
@@ -26,9 +30,12 @@ class NSEDataDownloader:
     ]
 
     def __init__(self, symbols=None, start_date=None, end_date=None, output_path=None,
-                 *, continue_after_row_rejection=False):
+                 *, continue_after_row_rejection=False, defer_archival_prices=False):
         if not isinstance(continue_after_row_rejection, bool):
             raise TypeError("continue_after_row_rejection must be a bool")
+        if not isinstance(defer_archival_prices, bool):
+            raise TypeError("defer_archival_prices must be a bool")
+        self.defer_archival_prices = defer_archival_prices
         self.continue_after_row_rejection = continue_after_row_rejection
         self._last_failure_kind = None
         self._last_observation = None
@@ -124,6 +131,34 @@ class NSEDataDownloader:
             logger.error('Unverified Yahoo prices for %s: %s', symbol, exc)
             return None
 
+    def _persist_archival_plan(self, requests, planned_at):
+        """Finalize outstanding work before bypassing any scheduled lookup.
+
+        This manifest is a worklist, not downloaded prices or a functioning
+        archive adapter. Keep it separate from both task CSVs and row evidence.
+        """
+        root = self.output_path.parent / 'price-archive-requests'
+        root.mkdir(parents=True, exist_ok=True)
+        target = Path(tempfile.mkdtemp(prefix='plan-', dir=root))
+        payload = (json.dumps({
+            'schema_version': 1,
+            'kind': 'outstanding_price_archival_work_not_market_data',
+            'run_id': os.environ.get('GITHUB_RUN_ID'),
+            'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+            'commit_sha': os.environ.get('GITHUB_SHA'),
+            'planned_at_utc': planned_at.isoformat(),
+            'original_requested': list(self.symbols),
+            'provider_candidates': [s for s in self.symbols if s not in requests],
+            'archival_requests': requests,
+            'historical_completeness': 'not_verified',
+            'downloaded_rows': 0,
+        }, indent=2, allow_nan=False) + '\n').encode('utf-8')
+        temporary = target / 'manifest.json.tmp'
+        temporary.write_bytes(payload)
+        path = temporary.replace(target / 'manifest.json')
+        return {'path': str(path), 'sha256': hashlib.sha256(payload).hexdigest(),
+                'bytes': len(payload)}
+
     def download_all_stocks(self):
         self.all_data = pd.DataFrame()
         self.rejection_evidence = []
@@ -134,16 +169,49 @@ class NSEDataDownloader:
                          'rejection_evidence': self.rejection_evidence,
                          'continue_after_row_rejection': self.continue_after_row_rejection,
                          'attempted': [], 'not_attempted': list(self.symbols),
-                         'row_quality_rejected': [], 'observations': {}, 'stop_reason': None}
+                         'row_quality_rejected': [], 'observations': {}, 'stop_reason': None,
+                         'defer_archival_prices': self.defer_archival_prices,
+                         'deferred_archival': [], 'archival_requests': {}, 'archival_plan': None}
+        # Plan by reviewed identity BEFORE any provider call, never in response
+        # to an arbitrary empty/denied result. Preserve scope even on early stop.
+        planned_at = datetime.now(timezone.utc)
+        requests = {}
+        if self.defer_archival_prices:
+            for symbol in self.symbols:
+                request = historical_price_deferral(
+                    symbol, self.start_date, self.end_date, planned_at.date())
+                if request is not None:
+                    requests[symbol] = request
+        self.coverage['archival_requests'] = requests
+        self.coverage['provider_candidates'] = [s for s in self.symbols if s not in requests]
+        self.coverage['pending_provider'] = list(self.coverage['provider_candidates'])
+        if requests:
+            try:
+                self.coverage['archival_plan'] = self._persist_archival_plan(requests, planned_at)
+            except Exception:
+                self.coverage['stop_reason'] = {'symbol': None,
+                                               'category': 'archival_plan_persistence_failed'}
+                raise  # No lookup may be deferred without a finalized work record.
+            self.coverage['deferred_archival'] = list(requests)
+            for symbol in requests:
+                self.coverage['observations'][symbol] = {
+                    'symbol': symbol, 'status': 'archival_required',
+                    'policy_id': requests[symbol]['policy_id'], 'provider_lookup_attempted': False,
+                }
         frames = []
         try:
             for index, symbol in enumerate(self.symbols):
+                if symbol in requests:
+                    logger.warning('Deferred %s to outstanding archival work; history remains incomplete',
+                                   symbol)
+                    continue
                 if index:
                     time.sleep(2)
                 self._last_failure_kind = None  # Never reuse a previous issuer's outcome.
                 self._last_observation = None
                 self.coverage['attempted'].append(symbol)
                 self.coverage['not_attempted'].remove(symbol)
+                self.coverage['pending_provider'].remove(symbol)
                 try:
                     frame = self.download_stock_data(symbol)
                 except Exception:
