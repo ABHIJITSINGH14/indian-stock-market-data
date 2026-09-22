@@ -1,0 +1,46 @@
+name: Bounded Yahoo response boundary audit
+
+on:
+  push:
+    branches: [fix/yahoo-response-boundary]
+    paths:
+      - scripts/audit_yahoo_boundary.py
+      - tests/test_yahoo_boundary.py
+      - .github/workflows/yahoo-boundary-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: yahoo-response-boundary-audit
+  cancel-in-progress: false
+
+jobs:
+  boundary-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pip check
+      - name: Offline contracts before the single bounded adapter invocation
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Compare the same HTTP chart response with the production adapter frame
+        timeout-minutes: 2
+        run: >-
+          python -m scripts.audit_yahoo_boundary
+          --directory "$RUNNER_TEMP/yahoo-response-boundary"
+          --symbol RELIANCE.NS --start 2026-09-18 --end 2026-09-22
+      - name: Preserve diagnostics without changing admission or production artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yahoo-boundary-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/yahoo-response-boundary/
+          if-no-files-found: error
+          retention-days: 7
