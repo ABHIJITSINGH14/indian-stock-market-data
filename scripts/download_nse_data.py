@@ -25,7 +25,13 @@ class NSEDataDownloader:
         'CIPLA.NS', 'DMART.NS', 'POWERGRID.NS', 'ULTRACEMCO.NS', 'COALINDIA.NS'
     ]
 
-    def __init__(self, symbols=None, start_date=None, end_date=None, output_path=None):
+    def __init__(self, symbols=None, start_date=None, end_date=None, output_path=None,
+                 *, continue_after_row_rejection=False):
+        if not isinstance(continue_after_row_rejection, bool):
+            raise TypeError("continue_after_row_rejection must be a bool")
+        self.continue_after_row_rejection = continue_after_row_rejection
+        self._last_failure_kind = None
+        self._last_observation = None
         self.symbols = list(self.NSE_STOCKS if symbols is None else symbols)
         if not self.symbols or len(set(self.symbols)) != len(self.symbols) or any(
             not isinstance(s, str) or not re.fullmatch(r'[A-Z0-9][A-Z0-9&.\-]*\.NS', s)
@@ -46,6 +52,8 @@ class NSEDataDownloader:
         self.rejection_evidence = []
 
     def download_stock_data(self, symbol):
+        self._last_failure_kind = None
+        self._last_observation = None
         try:
             logger.info('Downloading Yahoo prices for %s', symbol)
             frame = yf.download(
@@ -65,11 +73,29 @@ class NSEDataDownloader:
                     'price_basis': 'provider_ohlc_no_additional_yfinance_adjustment',
                 })
                 record = {'symbol': symbol, 'manifest': str(target / 'manifest.json'),
+                          'frame_rows': manifest['frame_rows'],
                           'usable_rows': manifest['usable_rows'],
                           'rejected_rows': manifest['rejected_rows'],
                           'frame_errors': manifest['frame_errors'],
                           'rejection_counts': manifest['rejection_counts']}
                 self.rejection_evidence.append(record)
+                # Continue only after a persisted, unambiguous, nonempty response
+                # with usable rows and numerical row defects. Date/schema faults,
+                # entirely unusable responses and evidence-write errors stop us.
+                numeric_reasons = {
+                    'missing:' + field for field in ('Open', 'High', 'Low', 'Close', 'Volume')
+                } | {
+                    'nonfinite:' + field for field in ('Open', 'High', 'Low', 'Close', 'Volume')
+                } | {
+                    'nonpositive:' + field for field in ('Open', 'High', 'Low', 'Close')
+                } | {'negative:Volume', 'fractional:Volume', 'invalid:Adj Close', 'ohlc_order'}
+                can_continue = (not audit.frame_errors and bool(audit.accepted_positions)
+                                and bool(audit.rejected) and all(
+                                    row['reasons'] and set(row['reasons']) <= numeric_reasons
+                                    for row in audit.rejected))
+                self._last_failure_kind = ('row_quality_rejected' if can_continue
+                                           else 'unverified_response')
+                self._last_observation = {**record, 'status': self._last_failure_kind}
                 logger.error('Price admission failed; evidence: %s', record)
                 return None  # Diagnostic recovery never changes whole-frame admission.
             result = frame.copy().sort_index()
@@ -82,36 +108,69 @@ class NSEDataDownloader:
             result['provider_version'] = yf.__version__
             result['price_basis'] = 'provider_ohlc_no_additional_yfinance_adjustment'
             result['retrieved_at_utc'] = datetime.now(timezone.utc).isoformat()
+            self._last_observation = {
+                'symbol': symbol, 'status': 'admitted_frame',
+                'frame_rows': len(frame), 'usable_rows': len(frame), 'rejected_rows': 0,
+            }
             return result
         except Exception as exc:
             # yfinance's dedicated exception is independent of the HTTP backend.
             if type(exc).__name__ == 'YFRateLimitError' or getattr(
                 getattr(exc, 'response', None), 'status_code', None
             ) in (401, 403, 429):
+                self._last_failure_kind = 'source_denied_or_rate_limited'
                 raise
+            self._last_failure_kind = 'source_or_processing_error'
             logger.error('Unverified Yahoo prices for %s: %s', symbol, exc)
             return None
 
     def download_all_stocks(self):
         self.all_data = pd.DataFrame()
         self.rejection_evidence = []
+        self._last_failure_kind = None
+        self._last_observation = None
         self.coverage = {'requested': list(self.symbols), 'returned': [],
                          'not_returned': list(self.symbols), 'historical_completeness': 'not_verified',
-                         'rejection_evidence': self.rejection_evidence}
+                         'rejection_evidence': self.rejection_evidence,
+                         'continue_after_row_rejection': self.continue_after_row_rejection,
+                         'attempted': [], 'not_attempted': list(self.symbols),
+                         'row_quality_rejected': [], 'observations': {}, 'stop_reason': None}
         frames = []
         try:
             for index, symbol in enumerate(self.symbols):
                 if index:
                     time.sleep(2)
-                frame = self.download_stock_data(symbol)
+                self._last_failure_kind = None  # Never reuse a previous issuer's outcome.
+                self._last_observation = None
+                self.coverage['attempted'].append(symbol)
+                self.coverage['not_attempted'].remove(symbol)
+                try:
+                    frame = self.download_stock_data(symbol)
+                except Exception:
+                    self.coverage['stop_reason'] = {
+                        'symbol': symbol,
+                        'category': self._last_failure_kind or 'source_or_processing_error',
+                    }
+                    raise
+                if self._last_observation is not None:
+                    self.coverage['observations'][symbol] = self._last_observation
                 if frame is None:
-                    # Empty results can hide a provider-wide denial: do not flood remaining tickers.
-                    logger.error('Stopping after unverified response; remaining identities stay unverified')
+                    category = self._last_failure_kind or 'unverified_response'
+                    if category == 'row_quality_rejected':
+                        self.coverage['row_quality_rejected'].append(symbol)
+                        if self.continue_after_row_rejection:
+                            logger.warning('Preserved rejected %s frame; examining next issuer, '
+                                           'without admitting this frame or declaring completion', symbol)
+                            continue
+                    # Empty/ambiguous responses can hide provider-wide denial.
+                    self.coverage['stop_reason'] = {'symbol': symbol, 'category': category}
+                    logger.error('Stopping after %s for %s; remaining identities stay unverified',
+                                 category, symbol)
                     return False
                 frames.append(frame)
                 self.coverage['returned'].append(symbol)
                 self.coverage['not_returned'].remove(symbol)
-            return bool(frames)
+            return bool(frames) and not self.coverage['not_returned']
         finally:
             if frames:
                 self.all_data = pd.concat(frames, ignore_index=True)

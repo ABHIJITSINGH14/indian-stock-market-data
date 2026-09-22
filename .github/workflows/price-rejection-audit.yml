@@ -2,7 +2,7 @@ name: Historical price rejection audit
 # A rejected frame remains a FAILED run; saved diagnostic subsets are not production data.
 on:
   push:
-    branches: [fix/price-rejection-evidence]
+    branches: [fix/price-rejection-evidence, fix/price-failure-isolation]
     paths:
       - .github/workflows/price-rejection-audit.yml
       - scripts/download_nse_data.py
@@ -30,11 +30,14 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install -r requirements.txt
       - run: python -m pip check
-      - name: Offline contracts before one provider request
+      - name: Offline contracts before bounded provider requests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
-      - name: One issuer, unchanged configured historical range, strict admission
-        timeout-minutes: 2
-        run: python -m scripts.audit_price_history --directory "$RUNNER_TEMP/historical-price-audit"
+      - name: Two issuers, unchanged historical range, isolated row failures
+        timeout-minutes: 3
+        run: >-
+          python -m scripts.audit_price_history
+          --directory "$RUNNER_TEMP/historical-price-audit"
+          --symbols RELIANCE.NS TCS.NS --continue-after-row-rejection
       - name: Preserve rejection evidence without turning failure into success
         if: always()
         uses: actions/upload-artifact@v4

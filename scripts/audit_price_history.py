@@ -1,4 +1,4 @@
-"""One ordinary historical request through the real adapter, with strict exit status."""
+"""Bounded historical requests through the real adapter, with strict exit status."""
 import argparse
 import json
 import os
@@ -11,13 +11,18 @@ from scripts.download_nse_data import NSEDataDownloader
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--directory', type=Path, required=True)
+    parser.add_argument('--symbols', nargs='+', default=['RELIANCE.NS'])
+    parser.add_argument('--continue-after-row-rejection', action='store_true')
     args = parser.parse_args()
+    if len(args.symbols) > 20:
+        parser.error('Historical diagnostics are bounded to at most 20 explicit issuers')
     # An evidence run may not reuse output from a previous attempt.
     args.directory.mkdir(parents=True, exist_ok=False)
-    collector = NSEDataDownloader(symbols=['RELIANCE.NS'],
-                                  output_path=args.directory / 'prices.csv')
+    collector = NSEDataDownloader(
+        symbols=args.symbols, output_path=args.directory / 'prices.csv',
+        continue_after_row_rejection=args.continue_after_row_rejection)
     result = {
-        'kind': 'single_issuer_historical_diagnostic_not_full_production',
+        'kind': 'bounded_historical_diagnostic_not_full_production',
         'run_id': os.environ.get('GITHUB_RUN_ID'),
         'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
         'commit_sha': os.environ.get('GITHUB_SHA'),
