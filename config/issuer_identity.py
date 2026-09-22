@@ -33,3 +33,43 @@ def current_snapshot_deferral(symbol: str, as_of: date) -> dict | None:
             'replacement_symbol': None,
         }
     return None
+
+
+HDFC_PRICE_REVIEWED_ON = date(2026, 9, 22)
+HDFC_PRICE_OBSERVATION_SOURCE = (
+    'https://github.com/ABHIJITSINGH14/indian-stock-market-data/'
+    'actions/runs/35685081036'
+)
+
+
+def historical_price_deferral(symbol: str, start: date, end: date,
+                              as_of: date) -> dict | None:
+    """Explicit retrieval routing, NOT a trading-calendar or price-history cutoff.
+
+    Today's unavailable HDFC adapter needs a separately verified archive even
+    for a pre-merger request. Keep the ENTIRE requested interval outstanding.
+    The review date is execution knowledge, not an historical market signal.
+    No other issuer or arbitrary empty response is eligible for this exception.
+    """
+    if start >= end:
+        raise ValueError('Start must precede exclusive end date')
+    if symbol == 'HDFC.NS' and as_of >= HDFC_PRICE_REVIEWED_ON:
+        return {
+            'policy_id': 'hdfc-yahoo-price-archive-v1',
+            'status': 'archival_required',
+            'provider_symbol': symbol,
+            'source_adapter': 'yahoo_finance',
+            'data_family': 'daily_ohlcv',
+            'reason': 'reviewed_merged_issuer_and_unavailable_provider_history',
+            'requested_start': start.isoformat(),
+            'requested_end_exclusive': end.isoformat(),
+            'reviewed_on': HDFC_PRICE_REVIEWED_ON.isoformat(),
+            'evidence_urls': [HDFC_MERGER_SOURCE, HDFC_PRICE_OBSERVATION_SOURCE],
+            'historical_obligation_preserved': True,
+            'historical_completeness': 'not_verified',
+            'replacement_symbol': None,
+            'last_trading_date': None,
+            'archive_source': None,
+            'archive_fetch_status': 'awaiting_verified_source',
+        }
+    return None

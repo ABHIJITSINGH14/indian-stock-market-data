@@ -13,6 +13,7 @@ def main():
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--symbols', nargs='+', default=['RELIANCE.NS'])
     parser.add_argument('--continue-after-row-rejection', action='store_true')
+    parser.add_argument('--defer-archival-prices', action='store_true')
     args = parser.parse_args()
     if len(args.symbols) > 20:
         parser.error('Historical diagnostics are bounded to at most 20 explicit issuers')
@@ -20,7 +21,8 @@ def main():
     args.directory.mkdir(parents=True, exist_ok=False)
     collector = NSEDataDownloader(
         symbols=args.symbols, output_path=args.directory / 'prices.csv',
-        continue_after_row_rejection=args.continue_after_row_rejection)
+        continue_after_row_rejection=args.continue_after_row_rejection,
+        defer_archival_prices=args.defer_archival_prices)
     result = {
         'kind': 'bounded_historical_diagnostic_not_full_production',
         'run_id': os.environ.get('GITHUB_RUN_ID'),

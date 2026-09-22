@@ -28,7 +28,7 @@ def run_all_downloads():
     logger.info("="*80)
     
     tasks = [
-        ("NSE Historical Data", NSEDataDownloader(continue_after_row_rejection=True)),
+        ("NSE Historical Data", NSEDataDownloader(continue_after_row_rejection=True, defer_archival_prices=True)),
         ("BSE Company Data", BSEDataDownloader()),
         ("Company Fundamentals", FundamentalsDownloader()),
         ("Bulk & Block Deals", BulkBlockDealsDownloader()),
