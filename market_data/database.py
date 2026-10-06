@@ -38,7 +38,7 @@ from market_data.normalization import (
 )
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 metadata = MetaData()
 
 schema_migrations = Table(
@@ -188,6 +188,141 @@ archive_availability = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
+federated_catalogs = Table(
+    "federated_catalogs",
+    metadata,
+    Column("generation_id", String(64), primary_key=True),
+    Column("schema_version", String(128), nullable=False),
+    Column("catalog_path", Text, nullable=False),
+    Column("manifest_path", Text, nullable=False),
+    Column("catalog_sha256", String(64), nullable=False),
+    Column("cutoff_utc", String(64), nullable=False),
+    Column("sealed", Boolean, nullable=False),
+    Column("research_admitted", Boolean, nullable=False),
+    Column("active_application_generation", Boolean, nullable=False),
+    Column("imported_at", DateTime(timezone=True), nullable=False),
+)
+
+federated_sources = Table(
+    "federated_sources",
+    metadata,
+    Column(
+        "generation_id",
+        String(64),
+        ForeignKey("federated_catalogs.generation_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("source_id", String(255), primary_key=True),
+    Column("display_name", Text, nullable=False),
+    Column("source_class", String(64), nullable=False),
+    Column("role", String(64), nullable=False),
+    Column("permission_state", String(64), nullable=False),
+    Column("normalization_state", String(64), nullable=False),
+    Column("predecessor_source_id", String(255)),
+    Column("terms_fingerprint", Text),
+    Column("constraint_text", Text, nullable=False),
+)
+Index(
+    "ix_federated_sources_role",
+    federated_sources.c.generation_id,
+    federated_sources.c.role,
+)
+
+federated_dataset_bindings = Table(
+    "federated_dataset_bindings",
+    metadata,
+    Column(
+        "generation_id",
+        String(64),
+        ForeignKey("federated_catalogs.generation_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("binding_id", String(255), primary_key=True),
+    Column("source_id", String(255), nullable=False),
+    Column("dataset_key", String(255), nullable=False),
+    Column("exchange", String(32)),
+    Column("segment", Text),
+    Column("relation_locator", Text, nullable=False),
+    Column("binding_format", String(64), nullable=False),
+    Column("disposition", String(64), nullable=False),
+    Column("physical_row_count", Integer),
+    Column("event_min", String(64)),
+    Column("event_max", String(64)),
+    Column("knowledge_min", String(64)),
+    Column("knowledge_max", String(64)),
+    Column("identity_contract", Text, nullable=False),
+    Column("knowledge_time_status", String(64), nullable=False),
+    Column("raw_lineage_status", String(64), nullable=False),
+    Column("research_admitted", Boolean, nullable=False),
+    Column("normalization_authorized", Boolean, nullable=False),
+)
+Index(
+    "ix_federated_bindings_dataset",
+    federated_dataset_bindings.c.generation_id,
+    federated_dataset_bindings.c.dataset_key,
+    federated_dataset_bindings.c.exchange,
+)
+
+federated_dataset_routes = Table(
+    "federated_dataset_routes",
+    metadata,
+    Column(
+        "generation_id",
+        String(64),
+        ForeignKey("federated_catalogs.generation_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("route_id", String(255), primary_key=True),
+    Column("dataset_key", String(255), nullable=False),
+    Column("exchange", String(32)),
+    Column("segment", Text),
+    Column("ordinal", Integer, nullable=False),
+    Column("binding_id", String(255)),
+    Column("action", String(64), nullable=False),
+    Column("scope_json", Text, nullable=False),
+    Column("fallback_authorized", Boolean, nullable=False),
+    Column("rationale", Text, nullable=False),
+    Column("rule_digest", String(64), nullable=False),
+)
+Index(
+    "ix_federated_routes_dataset",
+    federated_dataset_routes.c.generation_id,
+    federated_dataset_routes.c.dataset_key,
+    federated_dataset_routes.c.exchange,
+    federated_dataset_routes.c.ordinal,
+)
+
+federated_gap_records = Table(
+    "federated_gap_records",
+    metadata,
+    Column(
+        "generation_id",
+        String(64),
+        ForeignKey("federated_catalogs.generation_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("gap_id", String(255), primary_key=True),
+    Column("dataset_key", String(255), nullable=False),
+    Column("exchange", String(32)),
+    Column("segment", Text),
+    Column("scope_kind", String(64), nullable=False),
+    Column("primary_class", String(128), nullable=False),
+    Column("secondary_classes_json", Text, nullable=False),
+    Column("start_event", String(64)),
+    Column("end_event", String(64)),
+    Column("status", String(64), nullable=False),
+    Column("reason_code", String(128), nullable=False),
+    Column("source_id", String(255)),
+    Column("record_json", Text, nullable=False),
+    Column("evidence_json", Text, nullable=False),
+)
+Index(
+    "ix_federated_gaps_status",
+    federated_gap_records.c.generation_id,
+    federated_gap_records.c.status,
+    federated_gap_records.c.primary_class,
+)
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -263,7 +398,7 @@ class MarketDatabase:
             connection.execute(
                 schema_migrations.insert().values(
                     version=SCHEMA_VERSION,
-                    description="Historical backfill and archive coverage schema",
+                    description="Federated local data catalog",
                     applied_at=utcnow(),
                 )
             )

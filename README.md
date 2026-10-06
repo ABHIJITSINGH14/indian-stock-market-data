@@ -80,6 +80,10 @@ BSE data product, and this project does not substitute unofficial sources.
   `sast_disclosures`: normalized exchange disclosures linked to securities.
 - `institutional_activity`: market-wide daily FII/FPI and DII cash activity.
 - `market_metrics`: price and rolling 52-week observations used by the screener.
+- `federated_catalogs`, `federated_sources`, `federated_dataset_bindings`,
+  `federated_dataset_routes`, `federated_gap_records`: verified routing metadata
+  for complementary local datasets. External payloads remain read-only at their
+  original paths and are never silently unioned into canonical observations.
 - `schema_migrations`: locally applied schema version.
 
 Legacy ancillary scripts continue to produce ignored CSV files under
@@ -105,6 +109,18 @@ The service continuously resumes NSE/BSE prices and fundamentals, refreshes all
 NSE disclosure datasets, applies source-specific exponential cooldowns, and
 stops child collectors before disk space falls below the configured reserve.
 Progress and retry times persist in `data/databases/auto-backfill-state.json`.
+
+Register a sealed local data-lake catalog without copying its payloads:
+
+```bash
+python3 scripts/catalog_local_data.py \
+  --database-url sqlite:///data/databases/stock_market.db \
+  --manifest /path/to/consolidated/generation/MANIFEST.json
+```
+
+The command verifies the catalog SHA-256, sealed generation, and inactive,
+non-admitted safety flags before transactionally importing its sources, routes,
+bindings, and explicit gaps. Repeating the command is idempotent.
 
 ## Source notes
 

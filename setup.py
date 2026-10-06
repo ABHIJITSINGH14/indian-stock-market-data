@@ -44,6 +44,7 @@ setup(
             'stock-market-disclosures=scripts.collect_disclosures:main',
             'stock-fundamentals-backfill=scripts.backfill_fundamentals:main',
             'stock-auto-backfill=scripts.auto_backfill:main',
+            'stock-catalog-local-data=scripts.catalog_local_data:main',
             'stock-screener=scripts.screen:main',
         ],
     },
