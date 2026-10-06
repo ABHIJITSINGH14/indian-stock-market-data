@@ -35,6 +35,16 @@ def build_parser():
             type=Path,
             default=Path("data/databases/auto-backfill-state.json"),
         )
+        command.add_argument(
+            "--manifest",
+            type=Path,
+            default=Path.home() / "MarketData" / "manifest.jsonl",
+        )
+        command.add_argument(
+            "--raw-root",
+            type=Path,
+            default=Path.home() / "MarketData" / "raw",
+        )
     run = subparsers.choices["run"]
     run.add_argument("--once", action="store_true")
     run.add_argument("--min-free-gib", type=float, default=12.0)
@@ -64,6 +74,10 @@ def install(args) -> int:
             str(args.state_file.resolve()),
             "--min-free-gib",
             str(args.min_free_gib),
+            "--manifest",
+            str(args.manifest.expanduser().resolve()),
+            "--raw-root",
+            str(args.raw_root.expanduser().resolve()),
         ],
         "WorkingDirectory": str(root),
         "RunAtLoad": True,
@@ -119,7 +133,12 @@ def main(argv=None) -> int:
 
     root = Path(__file__).resolve().parents[1]
     runner = AutoBackfillRunner(
-        phase_commands(str(root / "venv" / "bin" / "python"), args.database_url),
+        phase_commands(
+            str(root / "venv" / "bin" / "python"),
+            args.database_url,
+            manifest_path=args.manifest.expanduser().resolve(),
+            raw_root=args.raw_root.expanduser().resolve(),
+        ),
         StateStore(args.state_file),
         Path("{}-auto.lock".format(args.state_file)),
         int(args.min_free_gib * 1024 ** 3),

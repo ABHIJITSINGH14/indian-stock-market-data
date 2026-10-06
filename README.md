@@ -145,6 +145,10 @@ bhavcopies whose manifest tag differs from their single, consistent `DATE1`
 value are admitted as `corrected_external`; both the original tag and the
 observed trading date are retained for auditability.
 
+The persistent auto-backfill runner replays this manifest catalog every six
+hours, so independently downloaded official partitions are hash-verified and
+federated without requiring a manual import or duplicating their payloads.
+
 ## Source notes
 
 NSE uses its official equity master CSV and legacy/UDiFF bhavcopy ZIP archives.

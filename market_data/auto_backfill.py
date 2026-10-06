@@ -29,12 +29,15 @@ def phase_commands(
     python: str,
     database_url: str,
     today: Optional[date] = None,
+    manifest_path: Optional[Path] = None,
+    raw_root: Optional[Path] = None,
 ) -> List[BackfillPhase]:
     today = today or date.today()
     root = str(Path(__file__).resolve().parents[1])
     fundamentals = str(Path(root) / "scripts" / "backfill_fundamentals.py")
     prices = str(Path(root) / "scripts" / "backfill.py")
     disclosures = str(Path(root) / "scripts" / "collect_disclosures.py")
+    local_archives = str(Path(root) / "scripts" / "import_local_archives.py")
     common_price = [
         "--database-url", database_url,
         "--timeout", "45",
@@ -52,7 +55,24 @@ def phase_commands(
         "--retries", "4",
     ]
     recent_start = (today - timedelta(days=45)).isoformat()
-    return [
+    phases = []
+    if manifest_path is not None and raw_root is not None:
+        phases.append(
+            BackfillPhase(
+                "local_manifest_catalog",
+                [
+                    python,
+                    local_archives,
+                    "--database-url", database_url,
+                    "--manifest", str(manifest_path),
+                    "--raw-root", str(raw_root),
+                    "--catalog-all",
+                ],
+                success_interval=6 * 60 * 60,
+                failure_interval=60 * 60,
+            )
+        )
+    phases.extend([
         BackfillPhase(
             "nse_prices",
             [python, prices, "backfill", "--exchange", "nse", "--workers", "2",
@@ -92,7 +112,8 @@ def phase_commands(
                 "--database-url", database_url,
             ],
         ),
-    ]
+    ])
+    return phases
 
 
 class StateStore:

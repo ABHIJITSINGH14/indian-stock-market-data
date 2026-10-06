@@ -47,6 +47,24 @@ def test_phase_commands_cover_all_dataset_surfaces():
     assert "2026-08-05" in disclosure
 
 
+def test_phase_commands_include_periodic_local_manifest_catalog(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    raw_root = tmp_path / "raw"
+    phases = phase_commands(
+        "/venv/python",
+        "sqlite:////tmp/market.db",
+        today=date(2026, 9, 19),
+        manifest_path=manifest,
+        raw_root=raw_root,
+    )
+    local = phases[0]
+    assert local.name == "local_manifest_catalog"
+    assert local.success_interval == 6 * 60 * 60
+    assert local.command[-1] == "--catalog-all"
+    assert str(manifest) in local.command
+    assert str(raw_root) in local.command
+
+
 def test_retry_delay_is_bounded_exponential():
     phase = BackfillPhase("test", ("true",), failure_interval=10)
     assert [retry_delay(phase, attempt) for attempt in range(1, 6)] == [
@@ -157,6 +175,8 @@ def test_install_reports_launchctl_bootstrap_failure(tmp_path, capsys):
         database_url = "sqlite:////tmp/market.db"
         state_file = tmp_path / "state.json"
         min_free_gib = 12.0
+        manifest = tmp_path / "manifest.jsonl"
+        raw_root = tmp_path / "raw"
 
     failed = __import__("subprocess").CompletedProcess(
         ["launchctl"], 5, stdout="", stderr="Bootstrap failed"
