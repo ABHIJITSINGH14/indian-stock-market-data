@@ -185,6 +185,7 @@ def test_install_reports_launchctl_bootstrap_failure(tmp_path, capsys):
         "scripts.auto_backfill.subprocess.run",
         side_effect=[
             __import__("subprocess").CompletedProcess(["launchctl"], 0),
+            __import__("subprocess").CompletedProcess(["launchctl"], 0),
             failed,
         ],
     ):

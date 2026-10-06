@@ -95,6 +95,12 @@ def install(args) -> int:
         stderr=subprocess.DEVNULL,
         check=False,
     )
+    subprocess.run(
+        ["launchctl", "enable", "{}/{}".format(domain, LABEL)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
     result = subprocess.run(
         ["launchctl", "bootstrap", domain, str(plist_path)],
         capture_output=True,
