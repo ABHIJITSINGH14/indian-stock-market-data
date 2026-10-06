@@ -140,7 +140,10 @@ Use `--catalog-only` to register all verified external partitions without
 materializing their rows, and `--start-date`/`--end-date` to bound physical
 imports. Use `--catalog-all` to verify and register every manifest kind,
 including derivatives, indexes, deliverable-volume reports, deals, corporate
-actions, and legacy exchange archives, as read-only external assets.
+actions, and legacy exchange archives, as read-only external assets. NSE full
+bhavcopies whose manifest tag differs from their single, consistent `DATE1`
+value are admitted as `corrected_external`; both the original tag and the
+observed trading date are retained for auditability.
 
 ## Source notes
 

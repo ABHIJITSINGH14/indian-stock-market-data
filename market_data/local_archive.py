@@ -1,10 +1,11 @@
 """Import checksum-manifested official bhavcopies already stored on disk."""
 
+import csv
 import hashlib
 import json
 import shutil
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional
 from urllib.parse import urlparse
@@ -243,15 +244,30 @@ class LocalArchiveImporter:
 
         self.database.initialize()
         verified = 0
+        corrected = 0
         quarantined = 0
         missing = 0
         values = []
         for entry in entries:
             if entry.status != "missing_local":
                 self._verify(entry)
-            if entry.status == "verified_external":
+            status = entry.status
+            observed_tag = None
+            correction_note = None
+            if status == "quarantined" and entry.kind == "nse_full":
+                observed_tag = self._nse_full_observed_date(entry)
+                if observed_tag != entry.tag:
+                    status = "corrected_external"
+                    correction_note = (
+                        "Manifest tag {} corrected from DATE1 {}".format(
+                            entry.tag, observed_tag
+                        )
+                    )
+            if status == "verified_external":
                 verified += 1
-            elif entry.status == "quarantined":
+            elif status == "corrected_external":
+                corrected += 1
+            elif status == "quarantined":
                 quarantined += 1
             else:
                 missing += 1
@@ -264,7 +280,9 @@ class LocalArchiveImporter:
                     "local_path": str(entry.path),
                     "size_bytes": entry.size_bytes,
                     "fetched_utc": entry.fetched_utc,
-                    "status": entry.status,
+                    "status": status,
+                    "observed_tag": observed_tag,
+                    "correction_note": correction_note,
                     "verified_at": utcnow(),
                 }
             )
@@ -275,6 +293,7 @@ class LocalArchiveImporter:
             self._upsert_manifest_assets(values)
         return {
             "verified_manifest_assets": verified,
+            "corrected_manifest_assets": corrected,
             "quarantined_manifest_assets": quarantined,
             "missing_manifest_assets": missing,
         }
@@ -450,6 +469,24 @@ class LocalArchiveImporter:
                 )
             )
 
+    @staticmethod
+    def _nse_full_observed_date(entry: ExternalManifestEntry) -> str:
+        dates = set()
+        with entry.path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                value = (row.get("DATE1") or row.get(" DATE1") or "").strip()
+                if value:
+                    dates.add(
+                        datetime.strptime(value, "%d-%b-%Y").date().isoformat()
+                    )
+        if len(dates) != 1:
+            raise LocalArchiveError(
+                "{} contains {} distinct DATE1 values".format(
+                    entry.path, len(dates)
+                )
+            )
+        return dates.pop()
+
     def _upsert_manifest_assets(self, values: List[Dict[str, object]]) -> None:
         statement = sqlite_insert(local_manifest_assets).values(values)
         with self.database.transaction() as connection:
@@ -466,6 +503,8 @@ class LocalArchiveImporter:
                         "size_bytes": statement.excluded.size_bytes,
                         "fetched_utc": statement.excluded.fetched_utc,
                         "status": statement.excluded.status,
+                        "observed_tag": statement.excluded.observed_tag,
+                        "correction_note": statement.excluded.correction_note,
                         "verified_at": statement.excluded.verified_at,
                     },
                 )

@@ -38,7 +38,7 @@ from market_data.normalization import (
 )
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 metadata = MetaData()
 
 schema_migrations = Table(
@@ -371,6 +371,8 @@ local_manifest_assets = Table(
     Column("size_bytes", Integer, nullable=False),
     Column("fetched_utc", String(64), nullable=False),
     Column("status", String(32), nullable=False),
+    Column("observed_tag", String(128)),
+    Column("correction_note", Text),
     Column("verified_at", DateTime(timezone=True), nullable=False),
 )
 Index(
@@ -451,6 +453,21 @@ class MarketDatabase:
             )
         ).scalar_one_or_none()
         if applied is None:
+            manifest_columns = {
+                row[1]
+                for row in connection.exec_driver_sql(
+                    "PRAGMA table_info(local_manifest_assets)"
+                )
+            }
+            if "observed_tag" not in manifest_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE local_manifest_assets "
+                    "ADD COLUMN observed_tag VARCHAR(128)"
+                )
+            if "correction_note" not in manifest_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE local_manifest_assets ADD COLUMN correction_note TEXT"
+                )
             connection.exec_driver_sql(
                 "DROP INDEX IF EXISTS ix_daily_prices_date"
             )
@@ -463,7 +480,7 @@ class MarketDatabase:
             connection.execute(
                 schema_migrations.insert().values(
                     version=SCHEMA_VERSION,
-                    description="Generic verified local manifest assets",
+                    description="Corrected external manifest assets",
                     applied_at=utcnow(),
                 )
             )

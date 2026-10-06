@@ -179,6 +179,7 @@ class LocalArchiveTests(unittest.TestCase):
             self.database, min_free_bytes=0
         ).catalog_external_entries(entries)
         self.assertEqual(result["verified_manifest_assets"], 2)
+        self.assertEqual(result["corrected_manifest_assets"], 0)
         self.assertEqual(result["missing_manifest_assets"], 0)
         self.assertEqual(result["quarantined_manifest_assets"], 0)
         with self.database.engine.connect() as connection:
@@ -188,6 +189,52 @@ class LocalArchiveTests(unittest.TestCase):
                 ),
                 2,
             )
+
+    def test_quarantined_full_bhavcopy_is_admitted_with_observed_date(self):
+        directory = self.raw_root / "nse_full_suspect"
+        directory.mkdir()
+        body = (
+            b"SYMBOL, SERIES, DATE1, CLOSE_PRICE\n"
+            b"ABC, EQ, 01-Oct-2019, 10.0\n"
+            b"XYZ, EQ, 01-Oct-2019, 20.0\n"
+        )
+        name = "sec_bhavdata_full_02102019.csv"
+        archive = directory / "2019-10-02_{}".format(name)
+        archive.write_bytes(body)
+        with self.manifest.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "kind": "nse_full",
+                        "tag": "2019-10-02",
+                        "url": "https://nsearchives.nseindia.com/products/content/"
+                        + name,
+                        "sha256": hashlib.sha256(body).hexdigest(),
+                        "bytes": len(body),
+                        "fetched_utc": "2026-10-06T05:00:00+00:00",
+                    }
+                )
+                + "\n"
+            )
+        entries = load_external_manifest(
+            self.manifest, self.raw_root, ("nse_full",)
+        )
+        result = LocalArchiveImporter(
+            self.database, min_free_bytes=0
+        ).catalog_external_entries(entries)
+        self.assertEqual(result["corrected_manifest_assets"], 1)
+        self.assertEqual(result["quarantined_manifest_assets"], 0)
+        with self.database.engine.connect() as connection:
+            asset = connection.execute(
+                select(
+                    local_manifest_assets.c.status,
+                    local_manifest_assets.c.observed_tag,
+                    local_manifest_assets.c.correction_note,
+                )
+            ).one()
+        self.assertEqual(asset.status, "corrected_external")
+        self.assertEqual(asset.observed_tag, "2019-10-01")
+        self.assertIn("2019-10-02", asset.correction_note)
 
 
 if __name__ == "__main__":
