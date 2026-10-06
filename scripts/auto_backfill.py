@@ -76,10 +76,30 @@ def install(args) -> int:
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    subprocess.run(
+    result = subprocess.run(
         ["launchctl", "bootstrap", domain, str(plist_path)],
-        check=True,
+        capture_output=True,
+        text=True,
+        check=False,
     )
+    if result.returncode:
+        message = (result.stderr or result.stdout).strip()
+        print(
+            "LaunchAgent written but launchctl bootstrap failed: {}".format(message),
+            file=sys.stderr,
+        )
+        print(
+            "Start it for this login with: {} {} run --database-url {} "
+            "--state-file {} --min-free-gib {}".format(
+                python,
+                Path(__file__).resolve(),
+                args.database_url,
+                args.state_file.resolve(),
+                args.min_free_gib,
+            ),
+            file=sys.stderr,
+        )
+        return result.returncode
     print(plist_path)
     return 0
 

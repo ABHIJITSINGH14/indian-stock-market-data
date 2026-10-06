@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 from datetime import date
 
 from market_data.auto_backfill import (
@@ -8,6 +9,7 @@ from market_data.auto_backfill import (
     phase_commands,
     retry_delay,
 )
+from scripts.auto_backfill import install
 
 
 class FakeRunner(AutoBackfillRunner):
@@ -106,3 +108,26 @@ def test_runner_defers_all_phases_when_disk_is_low(tmp_path):
     assert runner.calls == []
     assert store.load()["phases"]["prices"]["last_status"] == "low_disk"
     assert store.load()["phases"]["prices"]["next_run"] == 1030
+
+
+def test_install_reports_launchctl_bootstrap_failure(tmp_path, capsys):
+    class Args:
+        database_url = "sqlite:////tmp/market.db"
+        state_file = tmp_path / "state.json"
+        min_free_gib = 12.0
+
+    failed = __import__("subprocess").CompletedProcess(
+        ["launchctl"], 5, stdout="", stderr="Bootstrap failed"
+    )
+    with patch("scripts.auto_backfill.Path.home", return_value=tmp_path), patch(
+        "scripts.auto_backfill.subprocess.run",
+        side_effect=[
+            __import__("subprocess").CompletedProcess(["launchctl"], 0),
+            failed,
+        ],
+    ):
+        assert install(Args()) == 5
+
+    error = capsys.readouterr().err
+    assert "LaunchAgent written" in error
+    assert "Start it for this login" in error
