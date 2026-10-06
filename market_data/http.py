@@ -28,6 +28,7 @@ class HostRateLimiter:
         self._lock = threading.Lock()
         self._next_request = {}
         self._forbidden = {}
+        self._invalid = {}
         self._blocked_until = {}
 
     def wait(self, url: str) -> None:
@@ -37,9 +38,8 @@ class HostRateLimiter:
             blocked_until = self._blocked_until.get(host, 0.0)
             if blocked_until > now:
                 raise HostCircuitOpen(
-                    "{} circuit open after repeated HTTP 403 responses; retry after cooldown".format(
-                        host
-                    )
+                    "{} circuit open after repeated blocked or invalid responses; "
+                    "retry after cooldown".format(host)
                 )
             wait_for = max(0.0, self._next_request.get(host, now) - now)
             if wait_for:
@@ -56,6 +56,17 @@ class HostRateLimiter:
                     self._blocked_until[host] = time.monotonic() + self.cooldown
             elif status_code < 400:
                 self._forbidden[host] = 0
+                self._invalid[host] = 0
+
+    def invalid_response(self, url: str) -> None:
+        """Count successful HTTP responses whose bodies are not market data."""
+
+        host = urlparse(url).netloc.lower()
+        with self._lock:
+            failures = self._invalid.get(host, 0) + 1
+            self._invalid[host] = failures
+            if failures >= self.failure_threshold:
+                self._blocked_until[host] = time.monotonic() + self.cooldown
 
 
 class ExchangeHTTPClient:
@@ -130,7 +141,12 @@ class ExchangeHTTPClient:
         if self.rate_limiter and response.status_code == 403:
             self.rate_limiter.response(url, response.status_code)
         response.raise_for_status()
-        self._validate(response, expected)
+        try:
+            self._validate(response, expected)
+        except SourceResponseError:
+            if self.rate_limiter:
+                self.rate_limiter.invalid_response(url)
+            raise
         if self.rate_limiter:
             self.rate_limiter.response(url, response.status_code)
         return response

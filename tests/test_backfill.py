@@ -172,6 +172,14 @@ class BackfillTests(unittest.TestCase):
         with self.assertRaises(HostCircuitOpen):
             limiter.wait(url)
 
+    def test_rate_limiter_opens_circuit_after_invalid_content(self):
+        limiter = HostRateLimiter(0, failure_threshold=2, cooldown=60)
+        url = "https://www.bseindia.com/file.zip"
+        limiter.invalid_response(url)
+        limiter.invalid_response(url)
+        with self.assertRaises(HostCircuitOpen):
+            limiter.wait(url)
+
     def test_run_status_is_per_exchange(self):
         def fetch(source, trading_date):
             if source == "nse":
