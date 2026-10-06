@@ -38,7 +38,7 @@ from market_data.normalization import (
 )
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 metadata = MetaData()
 
 schema_migrations = Table(
@@ -323,6 +323,44 @@ Index(
     federated_gap_records.c.primary_class,
 )
 
+local_archive_imports = Table(
+    "local_archive_imports",
+    metadata,
+    Column("kind", String(16), primary_key=True),
+    Column("trading_date", Date, primary_key=True),
+    Column("sha256", String(64), primary_key=True),
+    Column("source_url", Text, nullable=False),
+    Column("local_path", Text, nullable=False),
+    Column("size_bytes", Integer, nullable=False),
+    Column("fetched_utc", String(64), nullable=False),
+    Column("row_count", Integer, nullable=False),
+    Column("imported_at", DateTime(timezone=True), nullable=False),
+)
+Index(
+    "ix_local_archive_imports_date",
+    local_archive_imports.c.kind,
+    local_archive_imports.c.trading_date,
+)
+
+local_archive_assets = Table(
+    "local_archive_assets",
+    metadata,
+    Column("kind", String(16), primary_key=True),
+    Column("trading_date", Date, primary_key=True),
+    Column("sha256", String(64), primary_key=True),
+    Column("source_url", Text, nullable=False),
+    Column("local_path", Text, nullable=False),
+    Column("size_bytes", Integer, nullable=False),
+    Column("fetched_utc", String(64), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("verified_at", DateTime(timezone=True), nullable=False),
+)
+Index(
+    "ix_local_archive_assets_date",
+    local_archive_assets.c.kind,
+    local_archive_assets.c.trading_date,
+)
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -398,7 +436,7 @@ class MarketDatabase:
             connection.execute(
                 schema_migrations.insert().values(
                     version=SCHEMA_VERSION,
-                    description="Federated local data catalog",
+                    description="External official archive catalog",
                     applied_at=utcnow(),
                 )
             )
@@ -598,13 +636,17 @@ class MarketDatabase:
         return count
 
     def _resolve_security(
-        self, connection: Connection, record: Dict[str, object]
+        self,
+        connection: Connection,
+        record: Dict[str, object],
+        refresh_security: bool = True,
     ) -> int:
         exchange = normalize_exchange(record["exchange"])
         symbol = normalize_symbol(record["symbol"], exchange, record.get("alias_source"))
         series = clean_text(record.get("series")).upper()
         scrip_code = clean_text(record.get("scrip_code")).upper()
-        if normalize_isin(record.get("isin")):
+        isin = normalize_isin(record.get("isin"))
+        if isin and refresh_security:
             return self.upsert_security(connection, record)
         if scrip_code:
             security_id = connection.execute(
@@ -616,6 +658,12 @@ class MarketDatabase:
                     exchange_symbols.c.updated_at.desc(),
                     exchange_symbols.c.id.desc(),
                 ).limit(1)
+            ).scalar_one_or_none()
+            if security_id is not None:
+                return int(security_id)
+        if isin:
+            security_id = connection.execute(
+                select(securities.c.id).where(securities.c.isin == isin)
             ).scalar_one_or_none()
             if security_id is not None:
                 return int(security_id)
@@ -638,7 +686,11 @@ class MarketDatabase:
             security_id = self.upsert_security(connection, record)
         return int(security_id)
 
-    def upsert_prices(self, records: Sequence[Dict[str, object]]) -> int:
+    def upsert_prices(
+        self,
+        records: Sequence[Dict[str, object]],
+        refresh_securities: bool = True,
+    ) -> int:
         if not records:
             return 0
         now = utcnow()
@@ -646,7 +698,12 @@ class MarketDatabase:
         with self.transaction() as connection:
             for record in records:
                 exchange = normalize_exchange(record["exchange"])
-                security_id = self._resolve_security(connection, record)
+                if refresh_securities:
+                    security_id = self._resolve_security(connection, record)
+                else:
+                    security_id = self._resolve_security(
+                        connection, record, refresh_security=False
+                    )
                 values.append(
                     {
                         "security_id": security_id,

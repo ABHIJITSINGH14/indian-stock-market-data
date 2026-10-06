@@ -122,6 +122,24 @@ The command verifies the catalog SHA-256, sealed generation, and inactive,
 non-admitted safety flags before transactionally importing its sources, routes,
 bindings, and explicit gaps. Repeating the command is idempotent.
 
+Verified official bhavcopies already present elsewhere on the machine can be
+subsumed without another network request:
+
+```bash
+python3 scripts/import_local_archives.py \
+  --database-url sqlite:///data/databases/stock_market.db \
+  --manifest ~/MarketData/manifest.jsonl \
+  --raw-root ~/MarketData/raw \
+  --exchange all --min-free-gib 12
+```
+
+Every file is matched to its manifest URL, size, SHA-256, and fetch time before
+parsing. Existing exchange dates and previously imported hashes are skipped,
+imports are resumable, and the command stops before breaching its disk reserve.
+Use `--catalog-only` to register all verified external partitions without
+materializing their rows, and `--start-date`/`--end-date` to bound physical
+imports.
+
 ## Source notes
 
 NSE uses its official equity master CSV and legacy/UDiFF bhavcopy ZIP archives.
