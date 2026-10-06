@@ -114,11 +114,12 @@ class HistoricalBackfill:
             start = max(starts[source], PUBLIC_BOUNDARIES[source])
             if start > end:
                 continue
+            external = self.database.external_price_dates(source, start, end)
             unavailable_months = self.database.unavailable_months(source)
             if only_failures:
                 dates = self.database.checkpoint_dates(
                     source, "daily_prices", start, end, ("failed",)
-                )
+                ) - external
             else:
                 terminal = self.database.checkpoint_dates(
                     source,
@@ -126,7 +127,15 @@ class HistoricalBackfill:
                     start,
                     end,
                     ("success", "holiday", "not_published"),
-                )
+                ) | external
+                if source == "bse":
+                    terminal |= self.database.checkpoint_dates(
+                        "nse",
+                        "daily_prices",
+                        start,
+                        end,
+                        ("holiday", "not_published"),
+                    )
                 dates = {
                     item
                     for item in trading_days(start, end)
@@ -321,10 +330,27 @@ def coverage_report(
         start = max(starts[source], PUBLIC_BOUNDARIES[source])
         snapshot = database.coverage_snapshot(source, start, end)
         expected = set(trading_days(start, end))
+        market_closed = (
+            database.checkpoint_dates(
+                "nse",
+                "daily_prices",
+                start,
+                end,
+                ("holiday", "not_published"),
+            )
+            if source == "bse"
+            else set()
+        )
+        expected -= market_closed
         present = snapshot.pop("present_dates")
-        missing = sorted(expected - present)
+        external = database.external_price_dates(source, start, end)
+        effective = present | external
+        missing = sorted(expected - effective)
         snapshot.update(
             expected_days=len(expected),
+            market_closed_days=len(market_closed),
+            federated_days=len(external - present),
+            effective_present_days=len(effective),
             missing_days=len(missing),
             missing_dates=missing,
         )

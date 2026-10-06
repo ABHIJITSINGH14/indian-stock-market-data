@@ -14,7 +14,13 @@ from market_data.backfill import (
     coverage_report,
 )
 from market_data.calendar import IST, is_trading_day, last_completed_trading_day
-from market_data.database import MarketDatabase, daily_prices, ingestion_runs
+from market_data.database import (
+    MarketDatabase,
+    daily_prices,
+    ingestion_runs,
+    local_manifest_assets,
+    utcnow,
+)
 from market_data.http import HostCircuitOpen, HostRateLimiter
 from scripts.backfill import build_parser
 
@@ -128,6 +134,61 @@ class BackfillTests(unittest.TestCase):
         )
         self.assertEqual(resumed, [("nse", date(2024, 1, 3)), ("nse", date(2024, 1, 4))])
         self.assertEqual(failures, [("nse", date(2024, 1, 3))])
+
+    def test_verified_external_partitions_satisfy_price_plan_and_coverage(self):
+        with self.database.transaction() as connection:
+            connection.execute(
+                local_manifest_assets.insert().values(
+                    kind="nse_cm",
+                    tag="2024-01-03",
+                    sha256="a" * 64,
+                    source_url="https://example.test/official.zip",
+                    local_path="/verified/official.zip",
+                    size_bytes=10,
+                    fetched_utc="2026-10-06T00:00:00+00:00",
+                    status="verified_external",
+                    verified_at=utcnow(),
+                )
+            )
+        service = HistoricalBackfill(self.database, lambda source, day: [])
+        plan = service.plan(
+            ["nse"], {"nse": date(2024, 1, 2)}, date(2024, 1, 4)
+        )
+        self.assertEqual(
+            plan, [("nse", date(2024, 1, 2)), ("nse", date(2024, 1, 4))]
+        )
+        report = coverage_report(
+            self.database,
+            ["nse"],
+            {"nse": date(2024, 1, 2)},
+            date(2024, 1, 4),
+        )[0]
+        self.assertEqual(report["federated_days"], 1)
+        self.assertEqual(report["effective_present_days"], 1)
+        self.assertEqual(
+            report["missing_dates"], [date(2024, 1, 2), date(2024, 1, 4)]
+        )
+
+    def test_bse_plan_uses_terminal_nse_market_closures(self):
+        closed = date(2024, 1, 3)
+        self.database.record_checkpoint(
+            "nse", "daily_prices", closed.isoformat(), "not_published", closed
+        )
+        service = HistoricalBackfill(self.database, lambda source, day: [])
+        plan = service.plan(
+            ["bse"], {"bse": date(2024, 1, 2)}, date(2024, 1, 4)
+        )
+        self.assertEqual(
+            plan, [("bse", date(2024, 1, 2)), ("bse", date(2024, 1, 4))]
+        )
+        report = coverage_report(
+            self.database,
+            ["bse"],
+            {"bse": date(2024, 1, 2)},
+            date(2024, 1, 4),
+        )[0]
+        self.assertEqual(report["market_closed_days"], 1)
+        self.assertNotIn(closed, report["missing_dates"])
 
     def test_interruption_leaves_unwritten_dates_for_resume(self):
         calls = 0

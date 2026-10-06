@@ -937,6 +937,42 @@ class MarketDatabase:
             ).scalars()
             return {item for item in rows if item is not None}
 
+    def external_price_dates(self, source: str, start: date, end: date) -> set:
+        """Return dates covered by hash-verified local price partitions."""
+
+        source = source.lower()
+        archive_kind = "{}_cm".format(source)
+        manifest_kinds = (
+            ("bse_cm", "bse_cm_old") if source == "bse" else ("nse_cm",)
+        )
+        with self.engine.connect() as connection:
+            archive_dates = set(
+                connection.execute(
+                    select(local_archive_assets.c.trading_date).where(
+                        local_archive_assets.c.kind == archive_kind,
+                        local_archive_assets.c.status.in_(
+                            ("verified_external", "materialized")
+                        ),
+                        local_archive_assets.c.trading_date >= start,
+                        local_archive_assets.c.trading_date <= end,
+                    )
+                ).scalars()
+            )
+            tags = connection.execute(
+                select(local_manifest_assets.c.tag).where(
+                    local_manifest_assets.c.kind.in_(manifest_kinds),
+                    local_manifest_assets.c.status == "verified_external",
+                    local_manifest_assets.c.tag >= start.isoformat(),
+                    local_manifest_assets.c.tag <= end.isoformat(),
+                )
+            ).scalars()
+            for tag in tags:
+                try:
+                    archive_dates.add(date.fromisoformat(tag))
+                except ValueError:
+                    continue
+        return {item for item in archive_dates if item is not None}
+
     def unavailable_months(self, source: str) -> set:
         with self.engine.connect() as connection:
             return set(
