@@ -330,17 +330,21 @@ def coverage_report(
         start = max(starts[source], PUBLIC_BOUNDARIES[source])
         snapshot = database.coverage_snapshot(source, start, end)
         expected = set(trading_days(start, end))
-        market_closed = (
-            database.checkpoint_dates(
+        market_closed = database.checkpoint_dates(
+            source,
+            "daily_prices",
+            start,
+            end,
+            ("holiday", "not_published"),
+        )
+        if source == "bse":
+            market_closed |= database.checkpoint_dates(
                 "nse",
                 "daily_prices",
                 start,
                 end,
                 ("holiday", "not_published"),
             )
-            if source == "bse"
-            else set()
-        )
         expected -= market_closed
         present = snapshot.pop("present_dates")
         external = database.external_price_dates(source, start, end)
