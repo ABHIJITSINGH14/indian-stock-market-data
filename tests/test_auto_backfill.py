@@ -110,6 +110,48 @@ def test_runner_defers_all_phases_when_disk_is_low(tmp_path):
     assert store.load()["phases"]["prices"]["next_run"] == 1030
 
 
+def test_runner_counts_reusable_sqlite_pages_as_effective_headroom(tmp_path):
+    phase = BackfillPhase("prices", ("true",))
+    runner = FakeRunner(
+        [phase],
+        StateStore(tmp_path / "state.json"),
+        tmp_path / "runner.lock",
+        minimum_free_bytes=12,
+        minimum_physical_bytes=8,
+        reusable_bytes=lambda: 3,
+        clock=lambda: 1000,
+        sleeper=lambda _seconds: None,
+        free_bytes=9,
+        exit_codes={},
+    )
+    runner.run(once=True)
+    assert runner.calls == ["prices"]
+
+
+def test_runner_never_uses_freelist_below_physical_floor(tmp_path):
+    phase = BackfillPhase("prices", ("true",))
+    store = StateStore(tmp_path / "state.json")
+    runner = FakeRunner(
+        [phase],
+        store,
+        tmp_path / "runner.lock",
+        minimum_free_bytes=12,
+        minimum_physical_bytes=8,
+        reusable_bytes=lambda: 100,
+        poll_interval=30,
+        clock=lambda: 1000,
+        sleeper=lambda _seconds: None,
+        free_bytes=7,
+        exit_codes={},
+    )
+    runner.run(once=True)
+    assert runner.calls == []
+    state = store.load()["phases"]["prices"]
+    assert state["last_free_bytes"] == 7
+    assert state["last_reusable_bytes"] == 100
+    assert state["last_effective_bytes"] == 107
+
+
 def test_install_reports_launchctl_bootstrap_failure(tmp_path, capsys):
     class Args:
         database_url = "sqlite:////tmp/market.db"

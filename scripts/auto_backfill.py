@@ -13,7 +13,12 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config.config import DATABASE_URL
-from market_data.auto_backfill import AutoBackfillRunner, StateStore, phase_commands
+from market_data.auto_backfill import (
+    AutoBackfillRunner,
+    StateStore,
+    phase_commands,
+    sqlite_reusable_bytes,
+)
 
 
 LABEL = "com.indian-stock-market-data.backfill"
@@ -119,6 +124,7 @@ def main(argv=None) -> int:
         Path("{}-auto.lock".format(args.state_file)),
         int(args.min_free_gib * 1024 ** 3),
         poll_interval=args.poll_interval,
+        reusable_bytes=lambda: sqlite_reusable_bytes(args.database_url),
     )
     try:
         runner.run(once=args.once)

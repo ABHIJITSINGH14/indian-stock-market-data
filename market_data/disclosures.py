@@ -136,8 +136,6 @@ financial_facts = Table(
         name="uq_financial_fact",
     ),
 )
-Index("ix_financial_facts_symbol_period", financial_facts.c.symbol, financial_facts.c.period_end)
-
 financial_fact_instances = Table(
     "financial_fact_instances",
     disclosure_metadata,
@@ -162,12 +160,6 @@ financial_fact_instances = Table(
     Column("value_text", Text),
     Column("value_numeric", Float),
 )
-Index(
-    "ix_financial_fact_instances_symbol_period",
-    financial_fact_instances.c.symbol,
-    financial_fact_instances.c.period_end,
-)
-
 financial_metrics = Table(
     "financial_metrics",
     disclosure_metadata,

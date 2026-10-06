@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import time
 from contextlib import contextmanager
@@ -11,6 +12,9 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Mapping, Optional, Sequence
+
+
+GIB = 1024 ** 3
 
 
 @dataclass(frozen=True)
@@ -118,6 +122,26 @@ def retry_delay(phase: BackfillPhase, failures: int) -> int:
     return min(24 * 60 * 60, phase.failure_interval * (2 ** exponent))
 
 
+def sqlite_reusable_bytes(database_url: str) -> int:
+    """Return bytes already allocated to reusable SQLite freelist pages."""
+
+    prefix = "sqlite:///"
+    if not database_url.startswith(prefix):
+        return 0
+    path = Path(database_url[len(prefix) :]).expanduser().resolve()
+    if not path.exists():
+        return 0
+    connection = sqlite3.connect(
+        "file:{}?mode=ro".format(path), uri=True, timeout=5
+    )
+    try:
+        page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+        pages = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+        return page_size * pages
+    finally:
+        connection.close()
+
+
 class AutoBackfillRunner:
     def __init__(
         self,
@@ -128,6 +152,8 @@ class AutoBackfillRunner:
         poll_interval: int = 300,
         clock: Callable[[], float] = time.time,
         sleeper: Callable[[float], None] = time.sleep,
+        reusable_bytes: Callable[[], int] = lambda: 0,
+        minimum_physical_bytes: Optional[int] = None,
     ):
         self.phases = list(phases)
         self.state_store = state_store
@@ -136,6 +162,12 @@ class AutoBackfillRunner:
         self.poll_interval = poll_interval
         self.clock = clock
         self.sleeper = sleeper
+        self.reusable_bytes = reusable_bytes
+        self.minimum_physical_bytes = (
+            min(minimum_free_bytes, 8 * GIB)
+            if minimum_physical_bytes is None
+            else minimum_physical_bytes
+        )
         self._child: Optional[subprocess.Popen] = None
         self._stopping = False
 
@@ -181,12 +213,14 @@ class AutoBackfillRunner:
                 for phase in due:
                     if self._stopping:
                         return
-                    free = self.free_bytes()
-                    if free < self.minimum_free_bytes:
+                    free, reusable = self.storage_headroom()
+                    if self.disk_guard_reached(free, reusable):
                         phase_state[phase.name] = {
                             **phase_state.get(phase.name, {}),
                             "last_status": "low_disk",
                             "last_free_bytes": free,
+                            "last_reusable_bytes": reusable,
+                            "last_effective_bytes": free + reusable,
                             "next_run": self.clock() + self.poll_interval,
                         }
                         self.state_store.save(state)
@@ -215,7 +249,8 @@ class AutoBackfillRunner:
         self._child = subprocess.Popen(list(phase.command), start_new_session=True)
         try:
             while self._child.poll() is None:
-                if self.free_bytes() < self.minimum_free_bytes:
+                free, reusable = self.storage_headroom()
+                if self.disk_guard_reached(free, reusable):
                     print(
                         "auto-backfill stopping {}: disk guard reached".format(
                             phase.name
@@ -242,3 +277,12 @@ class AutoBackfillRunner:
     def free_bytes() -> int:
         stats = os.statvfs(".")
         return stats.f_bavail * stats.f_frsize
+
+    def storage_headroom(self) -> tuple:
+        return self.free_bytes(), max(0, int(self.reusable_bytes()))
+
+    def disk_guard_reached(self, free: int, reusable: int) -> bool:
+        return (
+            free < self.minimum_physical_bytes
+            or free + reusable < self.minimum_free_bytes
+        )

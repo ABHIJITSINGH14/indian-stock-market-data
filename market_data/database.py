@@ -38,7 +38,7 @@ from market_data.normalization import (
 )
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 metadata = MetaData()
 
 schema_migrations = Table(
@@ -123,7 +123,6 @@ daily_prices = Table(
     CheckConstraint("volume IS NULL OR volume >= 0", name="ck_price_volume"),
 )
 Index("ix_daily_prices_exchange_date", daily_prices.c.exchange, daily_prices.c.trading_date)
-Index("ix_daily_prices_date", daily_prices.c.trading_date)
 
 ingestion_runs = Table(
     "ingestion_runs",
@@ -433,10 +432,19 @@ class MarketDatabase:
             )
         ).scalar_one_or_none()
         if applied is None:
+            connection.exec_driver_sql(
+                "DROP INDEX IF EXISTS ix_daily_prices_date"
+            )
+            connection.exec_driver_sql(
+                "DROP INDEX IF EXISTS ix_financial_facts_symbol_period"
+            )
+            connection.exec_driver_sql(
+                "DROP INDEX IF EXISTS ix_financial_fact_instances_symbol_period"
+            )
             connection.execute(
                 schema_migrations.insert().values(
                     version=SCHEMA_VERSION,
-                    description="External official archive catalog",
+                    description="Effective headroom and lean analytical indexes",
                     applied_at=utcnow(),
                 )
             )
