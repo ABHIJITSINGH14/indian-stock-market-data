@@ -138,7 +138,9 @@ parsing. Existing exchange dates and previously imported hashes are skipped,
 imports are resumable, and the command stops before breaching its disk reserve.
 Use `--catalog-only` to register all verified external partitions without
 materializing their rows, and `--start-date`/`--end-date` to bound physical
-imports.
+imports. Use `--catalog-all` to verify and register every manifest kind,
+including derivatives, indexes, deliverable-volume reports, deals, corporate
+actions, and legacy exchange archives, as read-only external assets.
 
 ## Source notes
 

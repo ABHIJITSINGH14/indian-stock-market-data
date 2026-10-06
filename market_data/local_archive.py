@@ -17,6 +17,7 @@ from market_data.database import (
     daily_prices,
     local_archive_assets,
     local_archive_imports,
+    local_manifest_assets,
     utcnow,
 )
 from market_data.sources import parse_bse_bhavcopy, parse_nse_bhavcopy
@@ -40,12 +41,53 @@ class ManifestEntry:
     path: Path
 
 
+@dataclass(frozen=True)
+class ExternalManifestEntry:
+    kind: str
+    tag: str
+    url: str
+    sha256: str
+    size_bytes: int
+    fetched_utc: str
+    path: Path
+    status: str
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _manifest_path(
+    raw_root: Path,
+    kind: str,
+    tag: str,
+    url: str,
+    size_bytes: int,
+) -> tuple:
+    directory = raw_root / kind
+    basename = Path(urlparse(url).path).name
+    preferred = directory / "{}_{}".format(tag, basename)
+    if preferred.is_file():
+        return preferred, "verified_external"
+    candidates = sorted(
+        {
+            path
+            for pattern in ("{}.*".format(tag), "{}_*".format(tag))
+            for path in directory.glob(pattern)
+            if path.is_file() and path.stat().st_size == size_bytes
+        }
+    )
+    if len(candidates) == 1:
+        return candidates[0], "verified_external"
+    suspect_directory = raw_root / "{}_suspect".format(kind)
+    suspect = suspect_directory / preferred.name
+    if suspect.is_file() and suspect.stat().st_size == size_bytes:
+        return suspect, "quarantined"
+    return preferred, "missing_local"
 
 
 def load_manifest(
@@ -100,6 +142,57 @@ def load_manifest(
     return sorted(entries.values(), key=lambda item: (item.trading_date, item.kind))
 
 
+def load_external_manifest(
+    manifest_path: Path,
+    raw_root: Path,
+    kinds: Optional[Iterable[str]] = None,
+) -> List[ExternalManifestEntry]:
+    """Load all selected checksum-manifested assets without assuming date tags."""
+
+    selected = set(kinds) if kinds is not None else None
+    entries: Dict[tuple, ExternalManifestEntry] = {}
+    manifest_path = manifest_path.expanduser().resolve()
+    raw_root = raw_root.expanduser().resolve()
+    for line_number, line in enumerate(
+        manifest_path.read_text(encoding="utf-8").splitlines(), 1
+    ):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+            kind = str(record["kind"])
+            if selected is not None and kind not in selected:
+                continue
+            tag = str(record["tag"])
+            url = str(record["url"])
+            size_bytes = int(record["bytes"])
+            path, status = _manifest_path(raw_root, kind, tag, url, size_bytes)
+            entry = ExternalManifestEntry(
+                kind=kind,
+                tag=tag,
+                url=url,
+                sha256=str(record["sha256"]).lower(),
+                size_bytes=size_bytes,
+                fetched_utc=str(record["fetched_utc"]),
+                path=path,
+                status=status,
+            )
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            raise LocalArchiveError(
+                "invalid external manifest record on line {}".format(line_number)
+            ) from error
+        key = (entry.kind, entry.tag)
+        previous = entries.get(key)
+        if previous and previous.sha256 != entry.sha256:
+            raise LocalArchiveError(
+                "conflicting manifest revisions for {} {}".format(
+                    entry.kind, entry.tag
+                )
+            )
+        entries[key] = entry
+    return sorted(entries.values(), key=lambda item: (item.kind, item.tag))
+
+
 class LocalArchiveImporter:
     def __init__(
         self,
@@ -140,6 +233,51 @@ class LocalArchiveImporter:
             self._upsert_assets(values)
             verified += len(values)
         return {"verified_assets": verified}
+
+    def catalog_external_entries(
+        self,
+        entries: Iterable[ExternalManifestEntry],
+        batch_size: int = 500,
+    ) -> Mapping[str, int]:
+        """Verify and register arbitrary official manifest assets."""
+
+        self.database.initialize()
+        verified = 0
+        quarantined = 0
+        missing = 0
+        values = []
+        for entry in entries:
+            if entry.status != "missing_local":
+                self._verify(entry)
+            if entry.status == "verified_external":
+                verified += 1
+            elif entry.status == "quarantined":
+                quarantined += 1
+            else:
+                missing += 1
+            values.append(
+                {
+                    "kind": entry.kind,
+                    "tag": entry.tag,
+                    "sha256": entry.sha256,
+                    "source_url": entry.url,
+                    "local_path": str(entry.path),
+                    "size_bytes": entry.size_bytes,
+                    "fetched_utc": entry.fetched_utc,
+                    "status": entry.status,
+                    "verified_at": utcnow(),
+                }
+            )
+            if len(values) >= batch_size:
+                self._upsert_manifest_assets(values)
+                values = []
+        if values:
+            self._upsert_manifest_assets(values)
+        return {
+            "verified_manifest_assets": verified,
+            "quarantined_manifest_assets": quarantined,
+            "missing_manifest_assets": missing,
+        }
 
     def import_entries(
         self,
@@ -300,6 +438,27 @@ class LocalArchiveImporter:
                         local_archive_assets.c.kind,
                         local_archive_assets.c.trading_date,
                         local_archive_assets.c.sha256,
+                    ],
+                    set_={
+                        "source_url": statement.excluded.source_url,
+                        "local_path": statement.excluded.local_path,
+                        "size_bytes": statement.excluded.size_bytes,
+                        "fetched_utc": statement.excluded.fetched_utc,
+                        "status": statement.excluded.status,
+                        "verified_at": statement.excluded.verified_at,
+                    },
+                )
+            )
+
+    def _upsert_manifest_assets(self, values: List[Dict[str, object]]) -> None:
+        statement = sqlite_insert(local_manifest_assets).values(values)
+        with self.database.transaction() as connection:
+            connection.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[
+                        local_manifest_assets.c.kind,
+                        local_manifest_assets.c.tag,
+                        local_manifest_assets.c.sha256,
                     ],
                     set_={
                         "source_url": statement.excluded.source_url,

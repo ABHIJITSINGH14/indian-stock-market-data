@@ -13,10 +13,12 @@ from market_data.database import (
     ingestion_checkpoints,
     local_archive_assets,
     local_archive_imports,
+    local_manifest_assets,
 )
 from market_data.local_archive import (
     LocalArchiveError,
     LocalArchiveImporter,
+    load_external_manifest,
     load_manifest,
 )
 
@@ -147,6 +149,44 @@ class LocalArchiveTests(unittest.TestCase):
             self.assertEqual(
                 connection.scalar(select(func.count()).select_from(daily_prices)),
                 0,
+            )
+
+    def test_generic_catalog_supports_non_date_partition_tags(self):
+        directory = self.raw_root / "api_ca"
+        directory.mkdir()
+        body = b"[]"
+        archive = directory / "2026-01-01_2026-03-31.json"
+        archive.write_bytes(body)
+        with self.manifest.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "kind": "api_ca",
+                        "tag": "2026-01-01_2026-03-31",
+                        "url": (
+                            "https://www.nseindia.com/api/corporates-corporateActions"
+                            "?from=01-01-2026&to=31-03-2026"
+                        ),
+                        "sha256": hashlib.sha256(body).hexdigest(),
+                        "bytes": len(body),
+                        "fetched_utc": "2026-10-06T05:00:00+00:00",
+                    }
+                )
+                + "\n"
+            )
+        entries = load_external_manifest(self.manifest, self.raw_root)
+        result = LocalArchiveImporter(
+            self.database, min_free_bytes=0
+        ).catalog_external_entries(entries)
+        self.assertEqual(result["verified_manifest_assets"], 2)
+        self.assertEqual(result["missing_manifest_assets"], 0)
+        self.assertEqual(result["quarantined_manifest_assets"], 0)
+        with self.database.engine.connect() as connection:
+            self.assertEqual(
+                connection.scalar(
+                    select(func.count()).select_from(local_manifest_assets)
+                ),
+                2,
             )
 
 

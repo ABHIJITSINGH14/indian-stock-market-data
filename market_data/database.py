@@ -38,7 +38,7 @@ from market_data.normalization import (
 )
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 metadata = MetaData()
 
 schema_migrations = Table(
@@ -360,6 +360,25 @@ Index(
     local_archive_assets.c.trading_date,
 )
 
+local_manifest_assets = Table(
+    "local_manifest_assets",
+    metadata,
+    Column("kind", String(32), primary_key=True),
+    Column("tag", String(128), primary_key=True),
+    Column("sha256", String(64), primary_key=True),
+    Column("source_url", Text, nullable=False),
+    Column("local_path", Text, nullable=False),
+    Column("size_bytes", Integer, nullable=False),
+    Column("fetched_utc", String(64), nullable=False),
+    Column("status", String(32), nullable=False),
+    Column("verified_at", DateTime(timezone=True), nullable=False),
+)
+Index(
+    "ix_local_manifest_assets_kind_tag",
+    local_manifest_assets.c.kind,
+    local_manifest_assets.c.tag,
+)
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -444,7 +463,7 @@ class MarketDatabase:
             connection.execute(
                 schema_migrations.insert().values(
                     version=SCHEMA_VERSION,
-                    description="Effective headroom and lean analytical indexes",
+                    description="Generic verified local manifest assets",
                     applied_at=utcnow(),
                 )
             )
