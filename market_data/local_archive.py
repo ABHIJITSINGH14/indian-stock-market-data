@@ -250,15 +250,13 @@ class LocalArchiveImporter:
 
         compressed = 0
         already_compressed = 0
+        skipped_unverified = 0
         original_bytes = 0
         compressed_bytes = 0
         for entry in entries:
             if entry.status != "verified_external":
-                raise LocalArchiveError(
-                    "refusing to compress {} asset {} {}".format(
-                        entry.status, entry.kind, entry.tag
-                    )
-                )
+                skipped_unverified += 1
+                continue
             self._verify(entry)
             if entry.path.suffix == ".gz":
                 already_compressed += 1
@@ -290,6 +288,7 @@ class LocalArchiveImporter:
         return {
             "compressed_manifest_assets": compressed,
             "already_compressed_manifest_assets": already_compressed,
+            "skipped_unverified_manifest_assets": skipped_unverified,
             "original_bytes": original_bytes,
             "compressed_bytes": compressed_bytes,
         }

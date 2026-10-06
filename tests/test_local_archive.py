@@ -266,6 +266,7 @@ class LocalArchiveTests(unittest.TestCase):
         )
         result = importer.compress_external_entries(entries)
         self.assertEqual(result["compressed_manifest_assets"], 1)
+        self.assertEqual(result["skipped_unverified_manifest_assets"], 0)
         self.assertFalse(archive.exists())
         self.assertTrue(Path(str(archive) + ".gz").exists())
 
