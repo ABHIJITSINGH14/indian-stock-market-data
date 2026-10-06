@@ -148,6 +148,9 @@ observed trading date are retained for auditability.
 The persistent auto-backfill runner replays this manifest catalog every six
 hours, so independently downloaded official partitions are hash-verified and
 federated without requiring a manual import or duplicating their payloads.
+Completed text-heavy partition kinds can be stored losslessly with
+`--compress-kind KIND`; verification continues to use the manifest's original
+byte count and SHA-256 over the transparently decompressed official payload.
 
 ## Source notes
 

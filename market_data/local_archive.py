@@ -1,10 +1,12 @@
 """Import checksum-manifested official bhavcopies already stored on disk."""
 
 import csv
+import gzip
 import hashlib
 import json
+import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional
@@ -54,12 +56,15 @@ class ExternalManifestEntry:
     status: str
 
 
-def _sha256(path: Path) -> str:
+def _payload_digest_and_size(path: Path) -> tuple:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    size = 0
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(str(path), "rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+            size += len(chunk)
+    return digest.hexdigest(), size
 
 
 def _manifest_path(
@@ -72,22 +77,25 @@ def _manifest_path(
     directory = raw_root / kind
     basename = Path(urlparse(url).path).name
     preferred = directory / "{}_{}".format(tag, basename)
-    if preferred.is_file():
-        return preferred, "verified_external"
+    for exact in (preferred, Path(str(preferred) + ".gz")):
+        if exact.is_file():
+            return exact, "verified_external"
     candidates = sorted(
         {
             path
             for pattern in ("{}.*".format(tag), "{}_*".format(tag))
             for path in directory.glob(pattern)
-            if path.is_file() and path.stat().st_size == size_bytes
+            if path.is_file()
+            and (path.suffix == ".gz" or path.stat().st_size == size_bytes)
         }
     )
     if len(candidates) == 1:
         return candidates[0], "verified_external"
     suspect_directory = raw_root / "{}_suspect".format(kind)
     suspect = suspect_directory / preferred.name
-    if suspect.is_file() and suspect.stat().st_size == size_bytes:
-        return suspect, "quarantined"
+    for exact in (suspect, Path(str(suspect) + ".gz")):
+        if exact.is_file():
+            return exact, "quarantined"
     return preferred, "missing_local"
 
 
@@ -234,6 +242,57 @@ class LocalArchiveImporter:
             self._upsert_assets(values)
             verified += len(values)
         return {"verified_assets": verified}
+
+    def compress_external_entries(
+        self, entries: Iterable[ExternalManifestEntry]
+    ) -> Mapping[str, int]:
+        """Losslessly compress verified payloads with atomic replacement."""
+
+        compressed = 0
+        already_compressed = 0
+        original_bytes = 0
+        compressed_bytes = 0
+        for entry in entries:
+            if entry.status != "verified_external":
+                raise LocalArchiveError(
+                    "refusing to compress {} asset {} {}".format(
+                        entry.status, entry.kind, entry.tag
+                    )
+                )
+            self._verify(entry)
+            if entry.path.suffix == ".gz":
+                already_compressed += 1
+                compressed_bytes += entry.path.stat().st_size
+                continue
+            target = Path(str(entry.path) + ".gz")
+            compressed_entry = replace(entry, path=target)
+            if target.exists():
+                self._verify(compressed_entry)
+            else:
+                temporary = target.with_name(
+                    ".{}.{}.tmp.gz".format(target.name, os.getpid())
+                )
+                try:
+                    with entry.path.open("rb") as source, temporary.open("wb") as raw:
+                        with gzip.GzipFile(
+                            filename="", mode="wb", fileobj=raw, mtime=0
+                        ) as destination:
+                            shutil.copyfileobj(source, destination, 1024 * 1024)
+                    self._verify(replace(entry, path=temporary))
+                    os.replace(str(temporary), str(target))
+                finally:
+                    if temporary.exists():
+                        temporary.unlink()
+            original_bytes += entry.path.stat().st_size
+            compressed_bytes += target.stat().st_size
+            entry.path.unlink()
+            compressed += 1
+        return {
+            "compressed_manifest_assets": compressed,
+            "already_compressed_manifest_assets": already_compressed,
+            "original_bytes": original_bytes,
+            "compressed_bytes": compressed_bytes,
+        }
 
     def catalog_external_entries(
         self,
@@ -514,7 +573,8 @@ class LocalArchiveImporter:
     def _verify(entry: ManifestEntry) -> None:
         if not entry.path.is_file():
             raise LocalArchiveError("manifested file is missing: {}".format(entry.path))
-        if entry.path.stat().st_size != entry.size_bytes:
+        digest, size = _payload_digest_and_size(entry.path)
+        if size != entry.size_bytes:
             raise LocalArchiveError("size mismatch for {}".format(entry.path))
-        if _sha256(entry.path) != entry.sha256:
+        if digest != entry.sha256:
             raise LocalArchiveError("SHA-256 mismatch for {}".format(entry.path))

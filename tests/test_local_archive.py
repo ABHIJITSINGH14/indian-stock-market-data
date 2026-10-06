@@ -236,6 +236,48 @@ class LocalArchiveTests(unittest.TestCase):
         self.assertEqual(asset.observed_tag, "2019-10-01")
         self.assertIn("2019-10-02", asset.correction_note)
 
+    def test_generic_asset_compression_preserves_manifest_verification(self):
+        directory = self.raw_root / "nse_mto"
+        directory.mkdir()
+        body = b"SYMBOL,SERIES,DELIV_QTY\nABC,EQ,12345\n" * 100
+        name = "MTO_01012026.DAT"
+        archive = directory / "2026-01-01_{}".format(name)
+        archive.write_bytes(body)
+        with self.manifest.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "kind": "nse_mto",
+                        "tag": "2026-01-01",
+                        "url": (
+                            "https://nsearchives.nseindia.com/archives/equities/mto/"
+                            + name
+                        ),
+                        "sha256": hashlib.sha256(body).hexdigest(),
+                        "bytes": len(body),
+                        "fetched_utc": "2026-10-06T05:00:00+00:00",
+                    }
+                )
+                + "\n"
+            )
+        importer = LocalArchiveImporter(self.database, min_free_bytes=0)
+        entries = load_external_manifest(
+            self.manifest, self.raw_root, ("nse_mto",)
+        )
+        result = importer.compress_external_entries(entries)
+        self.assertEqual(result["compressed_manifest_assets"], 1)
+        self.assertFalse(archive.exists())
+        self.assertTrue(Path(str(archive) + ".gz").exists())
+
+        compressed = load_external_manifest(
+            self.manifest, self.raw_root, ("nse_mto",)
+        )
+        catalog = importer.catalog_external_entries(compressed)
+        self.assertEqual(catalog["verified_manifest_assets"], 1)
+        with self.database.engine.connect() as connection:
+            stored = connection.scalar(select(local_manifest_assets.c.local_path))
+        self.assertTrue(stored.endswith(".gz"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,6 +43,11 @@ def main() -> int:
         action="store_true",
         help="Verify and register every manifested asset kind without materializing.",
     )
+    parser.add_argument(
+        "--compress-kind",
+        action="append",
+        help="Losslessly gzip and catalog a completed manifested asset kind.",
+    )
     args = parser.parse_args()
 
     kinds = (
@@ -55,7 +60,29 @@ def main() -> int:
         importer = LocalArchiveImporter(
             database, min_free_bytes=int(args.min_free_gib * GIB)
         )
-        if args.catalog_all:
+        if args.compress_kind:
+            if (
+                args.catalog_all
+                or args.catalog_only
+                or args.start_date
+                or args.end_date
+                or args.limit
+            ):
+                parser.error(
+                    "--compress-kind cannot be combined with catalog/import filters"
+                )
+            selected = tuple(dict.fromkeys(args.compress_kind))
+            result = dict(
+                importer.compress_external_entries(
+                    load_external_manifest(args.manifest, args.raw_root, selected)
+                )
+            )
+            result.update(
+                importer.catalog_external_entries(
+                    load_external_manifest(args.manifest, args.raw_root, selected)
+                )
+            )
+        elif args.catalog_all:
             if args.start_date or args.end_date or args.limit:
                 parser.error(
                     "--catalog-all cannot be combined with date filters or --limit"
