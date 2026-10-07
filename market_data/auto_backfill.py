@@ -37,6 +37,7 @@ def phase_commands(
     fundamentals = str(Path(root) / "scripts" / "backfill_fundamentals.py")
     prices = str(Path(root) / "scripts" / "backfill.py")
     disclosures = str(Path(root) / "scripts" / "collect_disclosures.py")
+    institutional = str(Path(root) / "scripts" / "backfill_institutional.py")
     local_archives = str(Path(root) / "scripts" / "import_local_archives.py")
     common_price = [
         "--database-url", database_url,
@@ -111,6 +112,20 @@ def phase_commands(
                 "--retries", "4",
                 "--database-url", database_url,
             ],
+        ),
+        BackfillPhase(
+            "institutional_activity",
+            [
+                python,
+                institutional,
+                "--database-url", database_url,
+                "--start-date", "1999-01-01",
+                "--end-date", today.isoformat(),
+                "--request-delay", "1",
+                "--timeout", "45",
+            ],
+            success_interval=24 * 60 * 60,
+            failure_interval=6 * 60 * 60,
         ),
     ])
     return phases

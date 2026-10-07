@@ -78,7 +78,9 @@ BSE data product, and this project does not substitute unofficial sources.
   and linked-document state, including explicit partial/failure diagnostics.
 - `corporate_actions`, `board_meetings`, `pit_disclosures`,
   `sast_disclosures`: normalized exchange disclosures linked to securities.
-- `institutional_activity`: market-wide daily FII/FPI and DII cash activity.
+- `institutional_activity`: market-wide daily institutional cash activity with
+  source-separated NSE provisional FII/FPI/DII observations and official CDSL
+  historical FII/FPI equity totals.
 - `market_metrics`: price and rolling 52-week observations used by the screener.
 - `federated_catalogs`, `federated_sources`, `federated_dataset_bindings`,
   `federated_dataset_routes`, `federated_gap_records`: verified routing metadata
@@ -106,9 +108,19 @@ venv/bin/python scripts/auto_backfill.py install \
 ```
 
 The service continuously resumes NSE/BSE prices and fundamentals, refreshes all
-NSE disclosure datasets, applies source-specific exponential cooldowns, and
-stops child collectors before disk space falls below the configured reserve.
+NSE disclosure datasets, backfills official CDSL FII/FPI history from 1999,
+applies source-specific exponential cooldowns, and stops child collectors before
+disk space falls below the configured reserve.
 Progress and retry times persist in `data/databases/auto-backfill-state.json`.
+
+The CDSL history can also be resumed directly. Each completed calendar month is
+checkpointed, and daily rows are idempotently upserted:
+
+```bash
+venv/bin/python scripts/backfill_institutional.py \
+  --database-url sqlite:///data/databases/stock_market.db \
+  --start-date 1999-01-01
+```
 
 Register a sealed local data-lake catalog without copying its payloads:
 

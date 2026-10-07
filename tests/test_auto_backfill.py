@@ -40,11 +40,15 @@ def test_phase_commands_cover_all_dataset_surfaces():
         "nse_fundamentals",
         "bse_fundamentals",
         "recent_disclosures",
+        "institutional_activity",
     ]
-    disclosure = phases[-1].command
+    disclosure = phases[-2].command
     for dataset in ("corporate_actions", "board_meetings", "pit", "sast", "fii_dii"):
         assert dataset in disclosure
     assert "2026-08-05" in disclosure
+    institutional = phases[-1].command
+    assert "backfill_institutional.py" in institutional[1]
+    assert "1999-01-01" in institutional
 
 
 def test_phase_commands_include_periodic_local_manifest_catalog(tmp_path):
