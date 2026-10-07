@@ -190,6 +190,19 @@ class BackfillTests(unittest.TestCase):
         self.assertEqual(report["market_closed_days"], 1)
         self.assertNotIn(closed, report["missing_dates"])
 
+    def test_official_holidays_are_recorded_and_removed_from_both_plans(self):
+        holiday = date(2024, 1, 3)
+        service = HistoricalBackfill(self.database, lambda source, day: [])
+        recorded = service.record_official_holidays(
+            {holiday: "Exchange holiday"},
+            date(2024, 1, 2),
+            date(2024, 1, 4),
+        )
+        self.assertEqual(recorded, 1)
+        starts = {"nse": date(2024, 1, 2), "bse": date(2024, 1, 2)}
+        self.assertNotIn(("nse", holiday), service.plan(["nse"], starts, date(2024, 1, 4)))
+        self.assertNotIn(("bse", holiday), service.plan(["bse"], starts, date(2024, 1, 4)))
+
     def test_interruption_leaves_unwritten_dates_for_resume(self):
         calls = 0
 

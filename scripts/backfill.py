@@ -138,6 +138,45 @@ def main(argv: Optional[List[str]] = None) -> int:
         args.end_date,
         only_failures=args.retry_failed,
     )
+    if not args.dry_run and not args.retry_failed and plan:
+        holiday_client = ExchangeHTTPClient(
+            timeout=args.timeout,
+            delay=0,
+            retries=args.retries,
+            rate_limiter=limiter,
+        )
+        holiday_source = NSESource(holiday_client)
+        holiday_years = sorted({trading_date.year for _, trading_date in plan})
+        try:
+            for year in holiday_years:
+                try:
+                    holidays = holiday_source.fetch_trading_holidays(year)
+                except Exception as error:
+                    logger.warning(
+                        "could not synchronize official NSE holidays for %d: %s",
+                        year,
+                        error,
+                    )
+                    continue
+                recorded = service.record_official_holidays(
+                    holidays,
+                    min(starts.values()),
+                    args.end_date,
+                )
+                if recorded:
+                    logger.info(
+                        "synchronized %d official NSE cash-market holidays for %d",
+                        recorded,
+                        year,
+                    )
+        finally:
+            holiday_client.close()
+        plan = service.plan(
+            sources,
+            starts,
+            args.end_date,
+            only_failures=False,
+        )
     logger.info(
         "planned %d archive dates (%s through %s) with %d workers%s",
         len(plan),

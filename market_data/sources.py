@@ -4,7 +4,7 @@ import csv
 import io
 import json
 import zipfile
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, Iterable, List, Mapping
 
 from market_data.http import ExchangeHTTPClient, SourceResponseError
@@ -235,6 +235,7 @@ def parse_bse_bhavcopy(data: bytes, trading_date: date) -> List[Dict[str, object
 
 class NSESource:
     name = "nse"
+    HOLIDAY_MASTER_URL = NSE_BASE_URL + "/api/holiday-master"
 
     def __init__(self, client: ExchangeHTTPClient):
         self.client = client
@@ -246,6 +247,28 @@ class NSESource:
             expected="csv",
         )
         return parse_nse_master(response.content)
+
+    def fetch_trading_holidays(self, year: int) -> Dict[date, str]:
+        response = self.client.get(
+            self.HOLIDAY_MASTER_URL,
+            source=self.name,
+            referer=NSE_BASE_URL,
+            params={"type": "trading", "year": year},
+            expected="json",
+        )
+        holidays = {}
+        for row in response.json().get("CM", []):
+            try:
+                trading_date = datetime.strptime(
+                    str(row["tradingDate"]).strip(), "%d-%b-%Y"
+                ).date()
+            except (KeyError, TypeError, ValueError) as exc:
+                raise SourceResponseError(
+                    "NSE holiday master contained an invalid cash-market date"
+                ) from exc
+            if trading_date.year == year:
+                holidays[trading_date] = str(row.get("description") or "Exchange holiday").strip()
+        return holidays
 
     def fetch_bhavcopy(self, trading_date: date) -> List[Dict[str, object]]:
         month = trading_date.strftime("%b").upper()

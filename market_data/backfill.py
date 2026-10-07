@@ -102,6 +102,24 @@ class HistoricalBackfill:
         self.workers = workers
         self.progress_interval = progress_interval
 
+    def record_official_holidays(
+        self, holidays: Dict[date, str], start: date, end: date
+    ) -> int:
+        recorded = 0
+        for trading_date, description in sorted(holidays.items()):
+            if trading_date < start or trading_date > end:
+                continue
+            self.database.record_checkpoint(
+                "nse",
+                "daily_prices",
+                trading_date.isoformat(),
+                "holiday",
+                checkpoint_date=trading_date,
+                error="Official NSE holiday master: {}".format(description),
+            )
+            recorded += 1
+        return recorded
+
     def plan(
         self,
         sources: Iterable[str],

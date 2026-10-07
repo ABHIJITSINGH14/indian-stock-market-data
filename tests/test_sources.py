@@ -100,3 +100,27 @@ class SourceParsingTests(unittest.TestCase):
             ]
         }
         self.assertEqual(BSESource(bse_client).fetch_master()[0]["scrip_code"], "500001")
+
+    def test_nse_source_parses_official_cash_market_holidays(self):
+        client = Mock()
+        client.get.return_value.json.return_value = {
+            "CM": [
+                {
+                    "tradingDate": "25-Mar-2024",
+                    "description": "Holi",
+                },
+                {
+                    "tradingDate": "26-Jan-2025",
+                    "description": "Other year",
+                },
+            ]
+        }
+        holidays = NSESource(client).fetch_trading_holidays(2024)
+        self.assertEqual(holidays, {date(2024, 3, 25): "Holi"})
+        client.get.assert_called_once_with(
+            NSESource.HOLIDAY_MASTER_URL,
+            source="nse",
+            referer="https://www.nseindia.com",
+            params={"type": "trading", "year": 2024},
+            expected="json",
+        )
