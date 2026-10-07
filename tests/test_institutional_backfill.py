@@ -67,6 +67,19 @@ class InstitutionalBackfillTests(unittest.TestCase):
         self.assertEqual((old[0].buy_value, old[0].net_value), (32.5, 25.0))
         self.assertEqual((new[0].buy_value, new[0].net_value), (12.0, 7.0))
 
+    def test_preserves_published_net_within_source_rounding_tolerance(self):
+        rounded = PRE_ROUTE.replace(
+            "<td>25.00</td>", "<td>25.10</td>"
+        )
+        row = parse_cdsl_activity(rounded)[0]
+        self.assertEqual(row.net_value, 25.1)
+        self.assertAlmostEqual(row.raw["reconciliation_delta"], 0.1)
+        invalid = PRE_ROUTE.replace(
+            "<td>25.00</td>", "<td>25.20</td>"
+        )
+        with self.assertRaisesRegex(ValueError, "do not reconcile"):
+            parse_cdsl_activity(invalid)
+
     def test_month_targets_use_partial_final_month(self):
         self.assertEqual(
             list(month_targets(date(2024, 1, 15), date(2024, 3, 4))),

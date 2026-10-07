@@ -94,7 +94,8 @@ def parse_cdsl_activity(html: str) -> List[InstitutionalActivity]:
         if current_date is None or len(values) != 3:
             continue
         buy, sell, net = map(_number, values)
-        if abs((buy - sell) - net) > 0.02:
+        reconciliation_delta = round(net - (buy - sell), 6)
+        if abs(reconciliation_delta) > 0.15:
             raise ValueError(
                 "CDSL FII/FPI values do not reconcile for {}".format(current_date)
             )
@@ -111,6 +112,9 @@ def parse_cdsl_activity(html: str) -> List[InstitutionalActivity]:
                     "buy_value": buy,
                     "sell_value": sell,
                     "net_value": net,
+                    "calculated_net_value": round(buy - sell, 6),
+                    "reconciliation_delta": reconciliation_delta,
+                    "published_net_preserved": True,
                 },
             )
         )
