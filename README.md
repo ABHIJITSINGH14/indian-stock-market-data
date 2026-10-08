@@ -81,6 +81,9 @@ BSE data product, and this project does not substitute unofficial sources.
 - `institutional_activity`: market-wide daily institutional cash activity with
   source-separated NSE provisional FII/FPI/DII observations and official CDSL
   historical FII/FPI equity totals.
+- `market_deals`: official NSE bulk and block deals keyed by exchange symbol,
+  with a canonical security link where resolvable, plus record and source-file
+  hashes and the original payload for provenance.
 - `market_metrics`: price and rolling 52-week observations used by the screener.
 - `federated_catalogs`, `federated_sources`, `federated_dataset_bindings`,
   `federated_dataset_routes`, `federated_gap_records`: verified routing metadata

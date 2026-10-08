@@ -39,6 +39,7 @@ def phase_commands(
     disclosures = str(Path(root) / "scripts" / "collect_disclosures.py")
     institutional = str(Path(root) / "scripts" / "backfill_institutional.py")
     local_archives = str(Path(root) / "scripts" / "import_local_archives.py")
+    market_deals = str(Path(root) / "scripts" / "import_market_deals.py")
     common_price = [
         "--database-url", database_url,
         "--timeout", "45",
@@ -68,6 +69,21 @@ def phase_commands(
                     "--manifest", str(manifest_path),
                     "--raw-root", str(raw_root),
                     "--catalog-all",
+                ],
+                success_interval=6 * 60 * 60,
+                failure_interval=60 * 60,
+            )
+        )
+        phases.append(
+            BackfillPhase(
+                "official_market_deals",
+                [
+                    python,
+                    market_deals,
+                    "--database-url", database_url,
+                    "--source-database", str(raw_root.parent / "deals_compact.db"),
+                    "--manifest", str(manifest_path),
+                    "--checksum", str(manifest_path.parent / "manifest.sha256"),
                 ],
                 success_interval=6 * 60 * 60,
                 failure_interval=60 * 60,

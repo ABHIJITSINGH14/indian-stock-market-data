@@ -11,6 +11,7 @@ from market_data.database import (
     MarketDatabase,
     daily_prices,
     exchange_symbols,
+    market_deals,
     schema_migrations,
     securities,
 )
@@ -59,6 +60,49 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(
                 connection.scalar(select(func.count()).select_from(schema_migrations)), 1
             )
+
+    def test_market_deal_upsert_is_idempotent_and_symbol_joinable(self):
+        self.database.upsert_securities(
+            [
+                {
+                    "exchange": "NSE",
+                    "symbol": "ABC",
+                    "series": "EQ",
+                    "name": "ABC Limited",
+                    "source": "fixture",
+                }
+            ]
+        )
+        security_id = self.database.engine.connect().execute(
+            select(exchange_symbols.c.security_id).where(
+                exchange_symbols.c.exchange == "NSE",
+                exchange_symbols.c.normalized_symbol == "ABC",
+            )
+        ).scalar_one()
+        record = {
+            "record_sha256": "a" * 64,
+            "security_id": security_id,
+            "exchange": "NSE",
+            "deal_type": "bulk",
+            "deal_date": date(2024, 1, 2),
+            "symbol": "ABC",
+            "client_name": "Client",
+            "side": "BUY",
+            "quantity": 10,
+            "price": 12.5,
+            "remarks": None,
+            "source": "fixture",
+            "source_sha256": "b" * 64,
+            "raw_data": "{}",
+        }
+        self.database.upsert_market_deals([record])
+        record["quantity"] = 11
+        self.database.upsert_market_deals([record])
+        with self.database.engine.connect() as connection:
+            self.assertEqual(
+                connection.scalar(select(func.count()).select_from(market_deals)), 1
+            )
+            self.assertEqual(connection.scalar(select(market_deals.c.quantity)), 11)
 
     def test_concurrent_schema_initialization_is_serialized(self):
         path = Path(self.temp_dir.name) / "concurrent.db"

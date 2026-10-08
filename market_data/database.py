@@ -38,7 +38,7 @@ from market_data.normalization import (
 )
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 metadata = MetaData()
 
 schema_migrations = Table(
@@ -123,6 +123,47 @@ daily_prices = Table(
     CheckConstraint("volume IS NULL OR volume >= 0", name="ck_price_volume"),
 )
 Index("ix_daily_prices_exchange_date", daily_prices.c.exchange, daily_prices.c.trading_date)
+
+market_deals = Table(
+    "market_deals",
+    metadata,
+    Column("record_sha256", String(64), primary_key=True),
+    Column(
+        "security_id",
+        Integer,
+        ForeignKey("securities.id", ondelete="SET NULL"),
+    ),
+    Column("exchange", String(3), nullable=False),
+    Column("deal_type", String(8), nullable=False),
+    Column("deal_date", Date, nullable=False),
+    Column("symbol", String(64), nullable=False),
+    Column("client_name", Text),
+    Column("side", String(4)),
+    Column("quantity", Integer),
+    Column("price", Float),
+    Column("remarks", Text),
+    Column("source", String(64), nullable=False),
+    Column("source_sha256", String(64), nullable=False),
+    Column("raw_data", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint("exchange IN ('NSE', 'BSE')", name="ck_deal_exchange"),
+    CheckConstraint("deal_type IN ('bulk', 'block')", name="ck_deal_type"),
+    CheckConstraint("side IS NULL OR side IN ('BUY', 'SELL')", name="ck_deal_side"),
+    CheckConstraint("quantity IS NULL OR quantity >= 0", name="ck_deal_quantity"),
+)
+Index(
+    "ix_market_deals_security_date",
+    market_deals.c.security_id,
+    market_deals.c.deal_date,
+)
+Index(
+    "ix_market_deals_symbol_date",
+    market_deals.c.exchange,
+    market_deals.c.symbol,
+    market_deals.c.deal_date,
+)
+Index("ix_market_deals_type_date", market_deals.c.deal_type, market_deals.c.deal_date)
 
 ingestion_runs = Table(
     "ingestion_runs",
@@ -480,7 +521,7 @@ class MarketDatabase:
             connection.execute(
                 schema_migrations.insert().values(
                     version=SCHEMA_VERSION,
-                    description="Corrected external manifest assets",
+                    description="Canonical official bulk and block deals",
                     applied_at=utcnow(),
                 )
             )
@@ -786,6 +827,32 @@ class MarketDatabase:
                         daily_prices.c.series,
                     ],
                     set_=update_columns,
+                )
+            )
+        return len(values)
+
+    def upsert_market_deals(self, records: Sequence[Dict[str, object]]) -> int:
+        if not records:
+            return 0
+        now = utcnow()
+        values = [
+            {
+                **record,
+                "created_at": now,
+                "updated_at": now,
+            }
+            for record in records
+        ]
+        with self.transaction() as connection:
+            statement = sqlite_insert(market_deals).values(values)
+            connection.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[market_deals.c.record_sha256],
+                    set_={
+                        column.name: getattr(statement.excluded, column.name)
+                        for column in market_deals.c
+                        if column.name not in {"record_sha256", "created_at"}
+                    },
                 )
             )
         return len(values)

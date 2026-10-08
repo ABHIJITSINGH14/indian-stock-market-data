@@ -67,6 +67,11 @@ def test_phase_commands_include_periodic_local_manifest_catalog(tmp_path):
     assert local.command[-1] == "--catalog-all"
     assert str(manifest) in local.command
     assert str(raw_root) in local.command
+    deals = phases[1]
+    assert deals.name == "official_market_deals"
+    assert deals.success_interval == 6 * 60 * 60
+    assert "import_market_deals.py" in deals.command[1]
+    assert str(raw_root.parent / "deals_compact.db") in deals.command
 
 
 def test_retry_delay_is_bounded_exponential():
