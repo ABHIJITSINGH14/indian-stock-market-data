@@ -1,0 +1,38 @@
+name: AARU integration gate
+
+on:
+  pull_request:
+    paths:
+      - "scripts/aaru_*.py"
+      - "scripts/aaru_*.sh"
+      - "schema/aaru_market_staging.sql"
+      - "config/aaru_dataset_contracts.json"
+      - "docs/aaru_*.md"
+      - "tests/test_aaru_inventory_v3.py"
+      - "tests/test_aaru_plan_downloads.py"
+      - "tests/test_aaru_execute_plan.py"
+      - ".github/workflows/aaru-integration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip pytest
+      - run: python -m py_compile scripts/aaru_*.py
+      - run: bash -n scripts/aaru_inventory_pipeline.sh
+      - run: >-
+          python -m pytest -q
+          tests/test_aaru_inventory_v3.py
+          tests/test_aaru_plan_downloads.py
+          tests/test_aaru_execute_plan.py

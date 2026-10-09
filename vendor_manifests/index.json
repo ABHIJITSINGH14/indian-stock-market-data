@@ -1,0 +1,17 @@
+{
+  "schema": "aaru.vendor-manifest-index.v1",
+  "source_commit": "b5a0c366d116a425473208ead51918905372a8aa",
+  "prefix": "tools/aaru_market_data/upstream",
+  "files": 86,
+  "chunks": 8,
+  "chunk_files": [
+    "manifest_001.json",
+    "manifest_002.json",
+    "manifest_003.json",
+    "manifest_004.json",
+    "manifest_005.json",
+    "manifest_006.json",
+    "manifest_007.json",
+    "manifest_008.json"
+  ]
+}
