@@ -70,6 +70,10 @@ def run_all_downloads():
         coverage = getattr(downloader, 'coverage', None)
         if isinstance(coverage, dict):
             results[task_name]['coverage'] = coverage
+        client = getattr(downloader, 'client', None)
+        metadata = getattr(client, 'last_request_metadata', None)
+        if isinstance(metadata, dict):
+            results[task_name]['last_source_request'] = metadata
 
     # Print summary
     logger.info(f"\n{'='*80}")

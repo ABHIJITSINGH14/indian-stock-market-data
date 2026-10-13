@@ -69,11 +69,14 @@ class FundamentalsDownloader:
                 'symbol_matches': info.get('symbol') == symbol if isinstance(info, dict) else False,
             }
             if not isinstance(info, dict) or info.get('symbol') != symbol:
+                self.last_response_metadata['failure_category'] = 'issuer_identity_unverified'
                 raise ValueError('Missing or mismatched issuer identity')
             cap = info.get('marketCap')
             if isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap) or cap <= 0:
+                self.last_response_metadata['failure_category'] = 'market_cap_unverified'
                 raise ValueError('Missing valid market cap; do not manufacture fundamentals')
             if info.get('currency') != 'INR':
+                self.last_response_metadata['failure_category'] = 'currency_unverified'
                 raise ValueError('Market cap currency is not verified as INR')
             
             fundamentals = {
@@ -130,6 +133,8 @@ class FundamentalsDownloader:
         self.coverage = {'requested': list(self.symbols), 'returned': [],
                          'not_returned': list(self.symbols), 'historical_completeness': 'not_verified',
                          'snapshot_as_of_date_ist': as_of.isoformat(), 'deferred': deferred}
+        self.coverage.update(attempted=[], not_attempted=list(self.symbols),
+                             observations={}, stop_reason=None)
         all_fundamentals = []
         try:
             attempted = 0
@@ -140,8 +145,19 @@ class FundamentalsDownloader:
                 if attempted:
                     time.sleep(2)
                 attempted += 1
-                fundamentals = self.fetch_stock_info(symbol)
+                self.coverage['attempted'].append(symbol)
+                self.coverage['not_attempted'].remove(symbol)
+                try:
+                    fundamentals = self.fetch_stock_info(symbol)
+                except Exception as exc:
+                    self.coverage['stop_reason'] = {'symbol': symbol, 'error_type': type(exc).__name__}
+                    raise
+                finally:
+                    self.coverage['observations'][symbol] = dict(self.last_response_metadata)
                 if fundamentals is None:
+                    self.coverage['stop_reason'] = {
+                        'symbol': symbol, 'category': self.last_response_metadata.get(
+                            'failure_category', 'unverified_response')}
                     logger.error('Stopping after unverified fundamentals; remaining issuers stay unverified')
                     return False
                 all_fundamentals.append(fundamentals)

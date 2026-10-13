@@ -270,6 +270,9 @@ class OrchestrationSummaryTests(unittest.TestCase):
         for i, (name, cls) in enumerate(specs):
             module = types.ModuleType('scripts.' + name)
             task = Mock()
+            task.coverage = {'requested': ['SYNTHETIC_ONLY'], 'returned': [],
+                             'observations': {'SYNTHETIC_ONLY': {'market_cap_present': False}}}
+            task.client.last_request_metadata = {'failure_category': 'tls_error', 'attempts': 1}
             if i == 0 and isinstance(first_result, Exception):
                 task.run.side_effect = first_result
             else:
@@ -293,6 +296,10 @@ class OrchestrationSummaryTests(unittest.TestCase):
         self.assertEqual(manifest['tasks']['NSE Historical Data']['status'], 'FAILED')
         self.assertEqual(manifest['run_id'], '123')
         self.assertEqual(manifest['commit_sha'], 'test-sha')
+        self.assertEqual(manifest['tasks']['NSE Historical Data']['coverage']['observations'],
+                         {'SYNTHETIC_ONLY': {'market_cap_present': False}})
+        self.assertEqual(manifest['tasks']['Bulk & Block Deals']['last_source_request'],
+                         {'failure_category': 'tls_error', 'attempts': 1})
 
     def test_exception_is_manifested(self):
         outcome, manifest = self.exercise(RuntimeError('source unavailable'))
